@@ -1,0 +1,51 @@
+# === СЕКРЕТЫ ===
+.env
+.env.*
+!.env.example
+
+# === ДАННЫЕ ПОЛЬЗОВАТЕЛЕЙ ===
+data/uploads/
+data/pages/
+data/blocks/
+data/results/
+data/training/images/
+data/training/pairs.jsonl
+data/training/stats.json
+
+# === ВЕСА МОДЕЛЕЙ (гигабайты, не нужны в git) ===
+models/versions/
+models/*.bin
+models/*.safetensors
+models/*.gguf
+models/*.pt
+models/*.pth
+
+# === PYTHON ===
+__pycache__/
+*.py[cod]
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# === DOCKER ===
+.docker/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === ЛОГИ ===
+*.log
+logs/
+
+# === JUPYTER ===
+.ipynb_checkpoints/
+*.ipynb
