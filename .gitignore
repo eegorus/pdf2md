@@ -13,12 +13,19 @@ data/training/pairs.jsonl
 data/training/stats.json
 
 # === ВЕСА МОДЕЛЕЙ (гигабайты, не нужны в git) ===
-models/versions/
-models/*.bin
-models/*.safetensors
-models/*.gguf
-models/*.pt
-models/*.pth
+# Исключаем все скачанные модели целиком
+models/doclayout-yolo/
+models/dots-ocr/
+models/qwen*/
+# Исключаем файлы весов в любой поддиректории models/
+models/**/*.bin
+models/**/*.safetensors
+models/**/*.gguf
+models/**/*.pt
+models/**/*.pth
+# НО сохраняем структуру versions/ и сам скрипт загрузки
+!models/versions/.gitkeep
+!models/download_models.py
 
 # === PYTHON ===
 __pycache__/

@@ -1,0 +1,8 @@
+streamlit>=1.40
+# httpx для async вызовов к backend (requests блокирует UI)
+httpx>=0.28
+requests>=2.32
+Pillow>=10.4,<12.0
+pandas>=2.1
+# для отображения HTML-таблиц в интерфейсе
+beautifulsoup4>=4.12

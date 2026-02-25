@@ -34,6 +34,7 @@ RUN pip uninstall -y texteller 2>/dev/null || true \
     && rm -rf /opt/texteller/.git
 
 # ── Environment ───────────────────────────────────────────────────────
+RUN pip install --no-cache-dir --force-reinstall "transformers==4.51.3"
 ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
