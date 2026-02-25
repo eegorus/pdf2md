@@ -52,7 +52,8 @@ services:
       - ./data:/app/data          # Данные пользователей
       - ./models:/app/models      # Веса моделей (кроме Ollama)
       - ./shared:/app/shared      # Общие схемы и утилиты (ИСПРАВЛЕНО vs ТЗ)
-      - model-cache:/root/.cache  # HuggingFace cache — переиспользуется между запусками
+      - model-cache:/root/.cache  # HuggingFace cache
+      - easyocr-cache:/root/.EasyOCR  # EasyOCR модели (~100 МБ) — переиспользуется между запусками
     environment:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
       - OLLAMA_FALLBACK_MODEL=${OLLAMA_FALLBACK_MODEL}
@@ -170,5 +171,10 @@ volumes:
 
   model-cache:
     driver: local
+
+  easyocr-cache:
+    driver: local
+    # Хранит модели EasyOCR (craft_mlt_25k.pth, ru/en recognition models)
+    # Не удаляется при docker compose down
     # HuggingFace cache — share между backend и finetune
     # Модели не качаются повторно при пересборке образов

@@ -1,0 +1,48 @@
+# ── Web Framework ─────────────────────────────────────────────────────
+fastapi==0.115.*
+uvicorn[standard]==0.32.*
+python-multipart==0.0.12
+python-dotenv==1.0.*
+
+# ── HTTP клиент (async вызовы к Ollama) ───────────────────────────────
+httpx==0.28.*
+
+# ── PDF обработка ─────────────────────────────────────────────────────
+pdf2image==1.17.*
+Pillow>=10.4,<12.0
+
+# ── Layout Detection ──────────────────────────────────────────────────
+doclayout-yolo>=0.0.3
+
+# ── OCR: Текст (замена PaddleOCR → EasyOCR) ───────────────────────────
+# Устанавливается одной строкой с PyPI, работает поверх PyTorch
+# который уже есть в базовом образе pytorch/pytorch
+# Поддержка: ru + en, GPU-ускорение из коробки
+easyocr>=1.7
+
+# ── OCR: Таблицы (зависимости dots.ocr) ───────────────────────────────
+# dots.ocr сам устанавливается в Dockerfile через git clone
+qwen-vl-utils>=0.0.8
+
+# ── OCR: Формулы ──────────────────────────────────────────────────────
+texteller
+
+# ── ML Utilities ──────────────────────────────────────────────────────
+transformers>=4.46
+accelerate>=0.34
+safetensors>=0.4
+onnxruntime-gpu>=1.19
+
+# ── Data Processing ───────────────────────────────────────────────────
+# ВАЖНО: numpy<2.0 — EasyOCR и ряд других пакетов несовместим с numpy 2.x
+numpy>=1.26,<2.0
+pandas>=2.1
+opencv-python-headless>=4.10
+scipy>=1.13
+
+# ── Storage / Utils ───────────────────────────────────────────────────
+huggingface-hub>=0.24
+pydantic>=2.7
+aiofiles>=23.2
+requests>=2.32
+tqdm>=4.66
