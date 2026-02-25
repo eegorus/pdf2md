@@ -25,10 +25,9 @@ easyocr>=1.7
 qwen-vl-utils>=0.0.8
 
 # ── OCR: Формулы ──────────────────────────────────────────────────────
-texteller
 
 # ── ML Utilities ──────────────────────────────────────────────────────
-transformers>=4.46
+transformers>=4.46,<4.48  # 4.48+ ломает Qwen2-VL процессор (dots.ocr)
 accelerate>=0.34
 safetensors>=0.4
 onnxruntime-gpu>=1.19

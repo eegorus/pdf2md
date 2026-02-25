@@ -25,6 +25,14 @@ RUN git clone --depth 1 https://github.com/rednote-hilab/dots.ocr.git /tmp/dots-
     && pip install --no-cache-dir -e . \
     && rm -rf /tmp/dots-ocr/.git
 
+# ── TexTeller (из исходников — PyPI 0.1.2 только мета-пакет без кода) ──
+# Сначала сносим мета-пакет если он попал через requirements.txt
+RUN pip uninstall -y texteller 2>/dev/null || true \
+    && git clone --depth 1 https://github.com/OleehyO/TexTeller.git /opt/texteller \
+    && cd /opt/texteller \
+    && pip install --no-cache-dir -e . \
+    && rm -rf /opt/texteller/.git
+
 # ── Environment ───────────────────────────────────────────────────────
 ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
