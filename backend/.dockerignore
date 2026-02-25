@@ -1,0 +1,20 @@
+# Данные — монтируются через volume, не копируются в образ
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+
+# Тесты
+tests/
+*.test.py
+
+# Документация
+*.md
+*.txt
+!requirements.txt
+
+# Git
+.git/
+.gitignore

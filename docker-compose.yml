@@ -1,0 +1,174 @@
+# Docker Compose v2 — поле version не нужно (deprecated)
+
+services:
+
+  # ============================================================
+  # КОНТЕЙНЕР 1: Ollama — локальный LLM-сервер
+  # Заменяет OpenAI/Claude из оригинального ТЗ
+  # Поднимается первым — backend зависит от него
+  # ============================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: prms-ollama
+    ports:
+      - "11434:11434"          # Открываем только локально (не наружу!)
+    volumes:
+      - /home/guiuser/.ollama:/root/.ollama   # Named volume — модели сохраняются между пересозданиями
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h       # Держим модель в VRAM 24ч после последнего запроса
+      - OLLAMA_MAX_LOADED_MODELS=1  # Только одна модель в VRAM одновременно
+      - OLLAMA_NUM_PARALLEL=2       # Максимум 2 параллельных запроса к модели
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      # ollama/ollama образ имеет встроенный healthcheck, но переопределяем для надёжности
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 15s
+      start_period: 60s    # Ollama стартует быстро, 60с достаточно
+      retries: 3
+    networks:
+      - prms-network
+
+  # ============================================================
+  # КОНТЕЙНЕР 2: Backend — FastAPI + специализированные ML-модели
+  # Тяжёлый контейнер: грузит DocLayout-YOLO, PaddleOCR, TexTeller
+  # start_period: 120s — модели грузятся при старте
+  # ============================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: prms-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data          # Данные пользователей
+      - ./models:/app/models      # Веса моделей (кроме Ollama)
+      - ./shared:/app/shared      # Общие схемы и утилиты (ИСПРАВЛЕНО vs ТЗ)
+      - model-cache:/root/.cache  # HuggingFace cache — переиспользуется между запусками
+    environment:
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+      - OLLAMA_FALLBACK_MODEL=${OLLAMA_FALLBACK_MODEL}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - PDF_DPI=${PDF_DPI}
+      - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB}
+      - BLOCK_CONFIDENCE_THRESHOLD=${BLOCK_CONFIDENCE_THRESHOLD}
+      - MIN_PAIRS_FOR_FINETUNE=${MIN_PAIRS_FOR_FINETUNE}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: "8gb"   # PaddleOCR использует shared memory для параллельной обработки
+    depends_on:
+      ollama:
+        condition: service_healthy  # Ждём пока Ollama не поднимется
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s  # Даём 2 минуты на загрузку всех ML-моделей
+      retries: 3
+    networks:
+      - prms-network
+
+  # ============================================================
+  # КОНТЕЙНЕР 3: Frontend — Streamlit UI
+  # Лёгкий контейнер: только UI, никакого ML, никакого GPU
+  # ============================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: prms-frontend
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data   # Нужен для отображения результатов и картинок
+    environment:
+      - BACKEND_URL=${BACKEND_URL}
+    depends_on:
+      backend:
+        condition: service_healthy  # Стартуем только когда backend здоров
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - prms-network
+
+  # ============================================================
+  # КОНТЕЙНЕР 4: Finetune — QLoRA дообучение
+  # ТОЛЬКО ручной запуск через --profile finetune
+  # Перед запуском ОБЯЗАТЕЛЬНО остановить backend И ollama!
+  # ============================================================
+  finetune:
+    build:
+      context: ./finetune
+      dockerfile: Dockerfile
+    container_name: prms-finetune
+    volumes:
+      - ./data:/workspace/data
+      - ./models:/workspace/models
+      - model-cache:/root/.cache
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: "16gb"    # QLoRA требует больше shared memory чем inference
+    profiles:
+      - finetune         # НЕ запустится при обычном docker compose up
+    command: >
+      bash -c "
+        echo '=== PRMS Fine-tuning контейнер ===' &&
+        echo 'Использование: python /workspace/train.py --help' &&
+        echo 'GPU:' && nvidia-smi --query-gpu=name,memory.total --format=csv,noheader &&
+        bash
+      "
+    stdin_open: true   # Нужен для интерактивной работы внутри контейнера
+    tty: true
+    networks:
+      - prms-network
+
+# ============================================================
+# СЕТИ
+# ============================================================
+networks:
+  prms-network:
+    driver: bridge
+    # Все контейнеры общаются по имени сервиса:
+    # backend → ollama:11434
+    # frontend → backend:8000
+
+# ============================================================
+# VOLUMES
+# ============================================================
+volumes:
+  ollama-data:
+    driver: local
+    # Хранит скачанные модели Ollama (~6-8 ГБ для qwen2.5vl:7b)
+    # НЕ удаляется при docker compose down
+    # Удалить можно только: docker volume rm prms-table-extractor_ollama-data
+
+  model-cache:
+    driver: local
+    # HuggingFace cache — share между backend и finetune
+    # Модели не качаются повторно при пересборке образов
