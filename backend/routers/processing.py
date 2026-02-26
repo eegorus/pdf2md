@@ -150,3 +150,40 @@ async def get_results(doc_id: str):
         "by_type":      dict(stats),
         "blocks":       blocks,
     }
+
+
+def _run_ocr(doc_id: str):
+    """Фоновая задача: OCR всех блоков документа."""
+    import os
+    from main import models
+    from pipeline.ocr_pipeline import OCRPipeline
+
+    data_dir = Path(os.getenv("DATA_DIR", "/app/data"))
+    pipeline = OCRPipeline(models=models, data_dir=data_dir)
+
+    try:
+        stats = pipeline.process_document(doc_id)
+        logger.info(f"OCR завершён для {doc_id}: {stats}")
+    except Exception as e:
+        logger.error(f"OCR pipeline ошибка ({doc_id}): {e}", exc_info=True)
+
+
+@router.post("/{doc_id}/ocr", summary="Запустить OCR всех блоков")
+async def start_ocr(doc_id: str, background_tasks: BackgroundTasks):
+    meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
+
+    meta = json.loads(meta_file.read_text())
+    if meta.get("status") != "layout_done":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Сначала запусти layout detection. Статус: {meta.get('status')}"
+        )
+
+    background_tasks.add_task(_run_ocr, doc_id)
+    return {
+        "doc_id":  doc_id,
+        "status":  "ocr_processing",
+        "message": "OCR запущен в фоне. Проверяй /status",
+    }
