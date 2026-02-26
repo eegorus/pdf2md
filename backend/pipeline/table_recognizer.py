@@ -54,6 +54,15 @@ class TableRecognizer:
         """
         image = image.convert("RGB")
 
+        # Масштабируем большие таблицы — главная причина OOM
+        # dots.ocr пытается выделить 6-12 ГБ на таблицы >2MP
+        # resize до 2MP решает OOM без заметной потери качества
+        from shared.utils import resize_for_inference
+        image, was_resized = resize_for_inference(image, max_pixels=2_000_000)
+        if was_resized:
+            logger.debug(f"Таблица масштабирована для инференса")
+
+
         # Формируем chat-сообщение в формате Qwen2-VL
         messages = [
             {

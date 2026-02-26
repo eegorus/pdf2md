@@ -187,3 +187,69 @@ async def start_ocr(doc_id: str, background_tasks: BackgroundTasks):
         "status":  "ocr_processing",
         "message": "OCR запущен в фоне. Проверяй /status",
     }
+
+
+@router.post("/{doc_id}/export", summary="Экспорт результатов")
+async def export_results(doc_id: str, format: str = "markdown"):
+    """
+    Экспортирует OCR результаты в файл.
+
+    format: markdown | json | csv
+    Файл сохраняется в /app/data/results/{doc_id}/export.*
+    """
+    import csv
+    import io
+
+    blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
+    if not blocks_file.exists():
+        raise HTTPException(status_code=404, detail="Результаты не найдены")
+
+    blocks = json.loads(blocks_file.read_text())
+    export_dir = DATA_DIR / "results" / doc_id
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    if format == "markdown":
+        from shared.utils import blocks_to_markdown
+        content  = blocks_to_markdown(blocks)
+        out_path = export_dir / "export.md"
+        out_path.write_text(content, encoding="utf-8")
+
+    elif format == "json":
+        out_path = export_dir / "export.json"
+        out_path.write_text(
+            json.dumps(blocks, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+
+    elif format == "csv":
+        out_path = export_dir / "export.csv"
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=[
+            "block_id", "page_num", "block_type",
+            "confidence", "status", "output"
+        ])
+        writer.writeheader()
+        for b in blocks:
+            writer.writerow({
+                "block_id":   b.get("block_id", ""),
+                "page_num":   b.get("page_num", ""),
+                "block_type": b.get("block_type", ""),
+                "confidence": b.get("confidence", ""),
+                "status":     b.get("status", ""),
+                "output":     (b.get("output") or "")[:500],
+            })
+        out_path.write_text(buf.getvalue(), encoding="utf-8")
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Формат не поддерживается: {format}")
+
+    size = out_path.stat().st_size
+    logger.info(f"Экспорт {doc_id} → {format} ({size} байт)")
+
+    return {
+        "doc_id":     doc_id,
+        "format":     format,
+        "file_path":  str(out_path),
+        "size_bytes": size,
+        "message":    f"Экспорт готов: {out_path.name}",
+    }
