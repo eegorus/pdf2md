@@ -9,7 +9,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Body
 
 import sys
 sys.path.insert(0, "/app")
@@ -123,11 +123,25 @@ async def processing_status(doc_id: str):
         raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
 
     meta = json.loads(meta_file.read_text())
+
+    # Считаем processed_blocks из blocks.json
+    total = meta.get("total_blocks", 0)
+    processed = 0
+    blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
+    if blocks_file.exists():
+        blocks = json.loads(blocks_file.read_text())
+        processed = sum(1 for b in blocks if b.get("status") not in ("detected", None))
+        total = len(blocks)
+
+    progress_pct = round(processed / total * 100) if total > 0 else 0
+
     return {
-        "doc_id":        doc_id,
-        "status":        meta.get("status"),
-        "page_count":    meta.get("page_count", 0),
-        "total_blocks":  meta.get("total_blocks", 0),
+        "doc_id":            doc_id,
+        "status":            meta.get("status"),
+        "page_count":        meta.get("page_count", 0),
+        "total_blocks":      total,
+        "processed_blocks":  processed,
+        "progress_pct":      progress_pct,
     }
 
 
@@ -253,3 +267,33 @@ async def export_results(doc_id: str, format: str = "markdown"):
         "size_bytes": size,
         "message":    f"Экспорт готов: {out_path.name}",
     }
+
+
+# ─── PATCH: обновить статус/output конкретного блока ───────────────────────
+@router.patch("/{doc_id}/blocks/{block_id}")
+async def patch_block(doc_id: str, block_id: str, payload: dict = Body(...)):
+    """
+    Обновить статус или output блока.
+    payload: {"status": "needs_review"} или {"output": "...", "status": "accepted"}
+    """
+    import json
+    blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
+    if not blocks_file.exists():
+        raise HTTPException(status_code=404, detail="Результаты не найдены")
+
+    blocks = json.loads(blocks_file.read_text())
+    updated = False
+    for block in blocks:
+        if block.get("block_id") == block_id:
+            if "status" in payload:
+                block["status"] = payload["status"]
+            if "output" in payload:
+                block["output"] = payload["output"]
+            updated = True
+            break
+
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Блок {block_id} не найден")
+
+    blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
+    return {"block_id": block_id, "updated": True, **payload}

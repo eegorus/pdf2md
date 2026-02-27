@@ -39,3 +39,6 @@ exec uvicorn main:app \
     --workers 1 \
     --log-level "${LOG_LEVEL_LOWER}" \
     --timeout-keep-alive 65
+# Fri Feb 27 12:00:27 MSK 2026
+# patch fix Fri Feb 27 12:04:19 MSK 2026
+# fix DATADIR Fri Feb 27 12:06:24 MSK 2026

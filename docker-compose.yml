@@ -49,6 +49,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./backend:/app            # hot-reload кода без rebuild
       - ./data:/app/data          # Данные пользователей
       - ./models:/app/models      # Веса моделей (кроме Ollama)
       - ./shared:/app/shared      # Общие схемы и утилиты (ИСПРАВЛЕНО vs ТЗ)

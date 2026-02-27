@@ -119,3 +119,42 @@ async def get_pages(doc_id: str):
         "status":     meta.get("status"),
         "pages":      meta.get("pages", []),
     }
+
+import os
+from fastapi.responses import FileResponse
+
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+
+@router.get("/{doc_id}/page-image/{page_num}")
+async def get_page_image(doc_id: str, page_num: int):
+    """PNG страницы целиком для Viewer."""
+    meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
+
+    # pages хранятся как page001.png, page002.png ...
+    page_path = DATA_DIR / "pages" / doc_id / f"page_{page_num:03d}.png"
+    if not page_path.exists():
+        raise HTTPException(status_code=404, detail=f"Страница {page_num} не найдена")
+
+    return FileResponse(str(page_path), media_type="image/png")
+
+
+@router.get("/{doc_id}/block-image/{block_id}")
+async def get_block_image(doc_id: str, block_id: str):
+    """PNG кропа конкретного блока."""
+    blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
+    if not blocks_file.exists():
+        raise HTTPException(status_code=404, detail="Результаты не найдены")
+
+    import json
+    blocks = json.loads(blocks_file.read_text())
+    block = next((b for b in blocks if b.get("block_id") == block_id), None)
+    if not block:
+        raise HTTPException(status_code=404, detail=f"Блок {block_id} не найден")
+
+    image_path = block.get("image_path") or block.get("imagepath")
+    if not image_path or not Path(image_path).exists():
+        raise HTTPException(status_code=404, detail="Изображение блока не найдено")
+
+    return FileResponse(str(image_path), media_type="image/png")
