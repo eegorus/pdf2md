@@ -285,10 +285,9 @@ async def patch_block(doc_id: str, block_id: str, payload: dict = Body(...)):
     updated = False
     for block in blocks:
         if block.get("block_id") == block_id:
-            if "status" in payload:
-                block["status"] = payload["status"]
-            if "output" in payload:
-                block["output"] = payload["output"]
+            for field in ("status", "output", "block_type", "bbox"):
+                if field in payload:
+                    block[field] = payload[field]
             updated = True
             break
 
@@ -297,3 +296,52 @@ async def patch_block(doc_id: str, block_id: str, payload: dict = Body(...)):
 
     blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
     return {"block_id": block_id, "updated": True, **payload}
+@router.delete("/{doc_id}/blocks/{block_id}", summary="Удалить блок")
+async def delete_block(doc_id: str, block_id: str):
+    blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
+    if not blocks_file.exists():
+        raise HTTPException(status_code=404, detail="blocks.json not found")
+    blocks = json.loads(blocks_file.read_text())
+    new_blocks = [b for b in blocks if b.get("block_id") != block_id]
+    if len(new_blocks) == len(blocks):
+        raise HTTPException(status_code=404, detail=f"block {block_id} not found")
+    blocks_file.write_text(json.dumps(new_blocks, ensure_ascii=False, indent=2))
+    meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
+    if meta_file.exists():
+        meta = json.loads(meta_file.read_text())
+        meta["total_blocks"] = len(new_blocks)
+        meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+    return {"block_id": block_id, "deleted": True}
+
+
+@router.post("/{doc_id}/blocks", summary="Добавить блок вручную")
+async def add_block(doc_id: str, payload: dict = Body(...)):
+    blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
+    if not blocks_file.exists():
+        raise HTTPException(status_code=404, detail="blocks.json not found")
+    blocks = json.loads(blocks_file.read_text())
+    import uuid
+    block_type = payload.get("block_type", "text")
+    page_num   = int(payload.get("page_num", 1))
+    bbox       = payload.get("bbox", [0, 0, 100, 100])
+    block_id   = f"{doc_id}p{page_num:03d}{block_type}{uuid.uuid4().hex[:4]}"
+    new_block  = {
+        "block_id":   block_id,
+        "page_num":   page_num,
+        "block_type": block_type,
+        "bbox":       bbox,
+        "confidence": 1.0,
+        "raw_class":  "manual",
+        "image_path": None,
+        "status":     "detected",
+        "output":     None,
+    }
+    blocks.append(new_block)
+    blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
+    meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
+    if meta_file.exists():
+        meta = json.loads(meta_file.read_text())
+        meta["total_blocks"] = len(blocks)
+        meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+    return {"block_id": block_id, "created": True}
+
