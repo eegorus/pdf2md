@@ -4,7 +4,6 @@ import httpx
 import os
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
-from streamlit_drawable_canvas import st_canvas
 import io
 from collections import Counter
 
@@ -22,11 +21,9 @@ BLOCK_COLORS = {
     "formula": (22,  163, 74),
     "figure":  (147, 51,  234),
 }
-TYPE_COLORS_HEX = {
-    "text":    "#3b82f6",
-    "table":   "#ea580c",
-    "formula": "#16a34a",
-    "figure":  "#9333ea",
+TYPE_HEX = {
+    "text": "#3b82f6", "table": "#ea580c",
+    "formula": "#16a34a", "figure": "#9333ea",
 }
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -47,27 +44,39 @@ def fetch_blocks(doc_id: str):
         return []
 
 @st.cache_data(ttl=60)
-def fetch_page_image(doc_id: str, page_num: int, max_width: int = 520):
-    """Возвращает (resized_img, orig_w, orig_h) или (None, 0, 0)."""
+def fetch_page_image(doc_id: str, page_num: int, max_w: int = 520, max_h: int = 680):
+    """Возвращает (resized_img, orig_w, orig_h, scale) или (None, 0, 0, 1.0)."""
     try:
         r = httpx.get(
-            f"{BACKEND_URL}/documents/{doc_id}/page-image/{page_num}",
-            timeout=15,
+            f"{BACKEND_URL}/documents/{doc_id}/page-image/{page_num}", timeout=15
         )
         if r.status_code == 200:
             img = Image.open(io.BytesIO(r.content)).convert("RGB")
             orig_w, orig_h = img.size
-            if img.width > max_width:
-                ratio = max_width / img.width
-                img = img.resize((max_width, int(img.height * ratio)), Image.LANCZOS)
-            return img, orig_w, orig_h
+            scale = min(1.0, max_w / orig_w, max_h / orig_h)
+            if scale < 1.0:
+                img = img.resize((int(orig_w * scale), int(orig_h * scale)), Image.LANCZOS)
+            return img, orig_w, orig_h, scale
     except Exception:
         pass
-    return None, 0, 0
+    return None, 0, 0, 1.0
 
-def draw_blocks_on_image(image, blocks, page_num, show_types, selected_id, bbox_scale=1.0):
+
+def draw_blocks_on_image(
+    image: Image.Image,
+    blocks: list,
+    page_num: int,
+    show_types: set,
+    selected_id: str | None,
+    scale: float = 1.0,
+    draw_pt1=None,       # (orig_x, orig_y) первый угол рисования
+    draw_preview=None,   # [ox1, oy1, ox2, oy2] в оригинальных координатах
+    draw_type: str = "text",
+) -> Image.Image:
     img = image.copy()
     draw = ImageDraw.Draw(img, "RGBA")
+
+    # ── Существующие блоки ──
     for block in blocks:
         if block.get("page_num") != page_num:
             continue
@@ -77,10 +86,7 @@ def draw_blocks_on_image(image, blocks, page_num, show_types, selected_id, bbox_
         bbox = block.get("bbox", [])
         if len(bbox) != 4:
             continue
-        x1 = int(bbox[0] * bbox_scale)
-        y1 = int(bbox[1] * bbox_scale)
-        x2 = int(bbox[2] * bbox_scale)
-        y2 = int(bbox[3] * bbox_scale)
+        x1, y1, x2, y2 = (int(v * scale) for v in bbox)
         rgb = BLOCK_COLORS.get(btype, (128, 128, 128))
         bid = block.get("block_id")
         status = block.get("status", "")
@@ -95,7 +101,24 @@ def draw_blocks_on_image(image, blocks, page_num, show_types, selected_id, bbox_
         draw.rectangle([x1, y1, x2, y2], fill=(*rgb, 30), outline=outline, width=lw)
         draw.rectangle([x1, y1, x1 + 18, y1 + 16], fill=(*rgb, 220))
         draw.text((x1 + 2, y1 + 1), btype[0].upper(), fill=(255, 255, 255))
+
+    # ── Первая точка (кружок) ──
+    if draw_pt1 is not None:
+        ax, ay = int(draw_pt1[0] * scale), int(draw_pt1[1] * scale)
+        draw.ellipse([ax - 7, ay - 7, ax + 7, ay + 7], fill=(255, 80, 80, 230))
+        draw.text((ax + 9, ay - 8), "1", fill=(255, 80, 80))
+
+    # ── Превью прямоугольника ──
+    if draw_preview is not None and len(draw_preview) == 4:
+        px1, py1, px2, py2 = (int(v * scale) for v in draw_preview)
+        rgb = BLOCK_COLORS.get(draw_type, (128, 128, 128))
+        draw.rectangle([px1, py1, px2, py2],
+                       fill=(*rgb, 50),
+                       outline=(*rgb, 255),
+                       width=2)
+
     return img
+
 
 # ─── SESSION STATE ─────────────────────────────────────────────────────────────
 _defaults = {
@@ -103,9 +126,13 @@ _defaults = {
     "viewer_selected_block": None,
     "viewer_edit_mode": False,
     "viewer_confirm_delete": False,
+    # Режим рисования
     "viewer_draw_mode": False,
     "viewer_draw_type": "text",
-    "viewer_canvas_key": 0,     # инкрементируем для сброса canvas
+    "viewer_draw_pt1": None,          # (orig_x, orig_y) — первый угол
+    "viewer_draw_preview": None,      # [ox1,oy1,ox2,oy2] — готовый bbox
+    "viewer_draw_last_hash": None,    # для детекции нового клика
+    # Размеры оригинала
     "viewer_orig_w": 0,
     "viewer_orig_h": 0,
 }
@@ -122,7 +149,7 @@ if not doc_id:
     st.stop()
 
 all_blocks = fetch_blocks(doc_id)
-doc_name   = st.session_state.get("current_doc_name", doc_id)
+doc_name = st.session_state.get("current_doc_name", doc_id)
 
 try:
     r = httpx.get(f"{BACKEND_URL}/processing/{doc_id}/status", timeout=5)
@@ -148,13 +175,13 @@ with col_left:
             use_container_width=True,
             type="primary" if is_cur else "secondary",
         ):
-            st.session_state.current_doc_id           = did
-            st.session_state.current_doc_name         = doc.get("filename", did)
-            st.session_state.viewer_page              = 1
-            st.session_state.viewer_selected_block    = None
-            st.session_state.viewer_confirm_delete    = False
-            st.session_state.viewer_draw_mode         = False
-            st.session_state.viewer_canvas_key        += 1
+            st.session_state.current_doc_id        = did
+            st.session_state.current_doc_name      = doc.get("filename", did)
+            st.session_state.viewer_page           = 1
+            st.session_state.viewer_selected_block = None
+            st.session_state.viewer_draw_mode      = False
+            st.session_state.viewer_draw_pt1       = None
+            st.session_state.viewer_draw_preview   = None
             fetch_blocks.clear()
             st.rerun()
 
@@ -169,7 +196,8 @@ with col_left:
     st.markdown("---")
     st.markdown("### 📊 Страница")
     st.caption(f"📄 {doc_name[:28]}")
-    page_blocks_cur = [b for b in all_blocks if b.get("page_num") == st.session_state.viewer_page]
+    page_blocks_cur = [b for b in all_blocks
+                       if b.get("page_num") == st.session_state.viewer_page]
     type_counts = Counter(b.get("block_type") for b in page_blocks_cur)
     st.metric("Страниц", total_pages)
     st.metric("Всего блоков", len(all_blocks))
@@ -184,16 +212,20 @@ with col_left:
 # MAIN — навигация + изображение + список блоков
 # ══════════════════════════════════════════════════════════════════════════════
 with col_main:
-    # Навигация
+    # ── Навигация ─────────────────────────────────────────────────────────
     n1, n2, n3, n4, n5 = st.columns([1, 1, 2, 1, 1])
     with n1:
         if st.button("⏮", use_container_width=True):
             st.session_state.viewer_page = 1
             st.session_state.viewer_selected_block = None
+            st.session_state.viewer_draw_pt1 = None
+            st.session_state.viewer_draw_preview = None
     with n2:
         if st.button("◀", use_container_width=True) and st.session_state.viewer_page > 1:
             st.session_state.viewer_page -= 1
             st.session_state.viewer_selected_block = None
+            st.session_state.viewer_draw_pt1 = None
+            st.session_state.viewer_draw_preview = None
     with n3:
         new_page = st.number_input(
             "Стр.", min_value=1, max_value=total_pages,
@@ -203,175 +235,195 @@ with col_main:
         if new_page != st.session_state.viewer_page:
             st.session_state.viewer_page = new_page
             st.session_state.viewer_selected_block = None
+            st.session_state.viewer_draw_pt1 = None
+            st.session_state.viewer_draw_preview = None
     with n4:
         if st.button("▶", use_container_width=True) and st.session_state.viewer_page < total_pages:
             st.session_state.viewer_page += 1
             st.session_state.viewer_selected_block = None
+            st.session_state.viewer_draw_pt1 = None
+            st.session_state.viewer_draw_preview = None
     with n5:
         if st.button("⏭", use_container_width=True):
             st.session_state.viewer_page = total_pages
             st.session_state.viewer_selected_block = None
+            st.session_state.viewer_draw_pt1 = None
+            st.session_state.viewer_draw_preview = None
 
     st.caption(f"Страница {st.session_state.viewer_page} / {total_pages}")
 
-    # ── Переключатель режима ───────────────────────────────────────────────
-    tc1, tc2, tc3 = st.columns([1, 1.5, 2.5])
+    # ── Тулбар: переключатель режима и выбор типа ─────────────────────────
+    is_draw = st.session_state.viewer_draw_mode
+    tc1, tc2 = st.columns([1, 3])
     with tc1:
-        is_draw = st.session_state.viewer_draw_mode
         if st.button(
             "👆 Выбор" if is_draw else "✏️ Рисовать",
             use_container_width=True,
             type="secondary" if is_draw else "primary",
-            key="toggle_draw_mode",
+            key="toggle_mode",
         ):
-            st.session_state.viewer_draw_mode = not is_draw
-            st.session_state.viewer_canvas_key += 1
-            st.rerun()
+            st.session_state.viewer_draw_mode    = not is_draw
+            st.session_state.viewer_draw_pt1     = None
+            st.session_state.viewer_draw_preview = None
+            st.session_state.viewer_draw_last_hash = None
+            # НЕ делаем rerun — следующий рендер сам подхватит новый режим
 
     if st.session_state.viewer_draw_mode:
         with tc2:
             type_opts = ["text", "table", "formula", "figure"]
             icons = {"text": "📝", "table": "📊", "formula": "➗", "figure": "🖼"}
-            st.session_state.viewer_draw_type = st.selectbox(
+            prev_type = st.session_state.viewer_draw_type
+            new_type = st.selectbox(
                 "тип",
                 type_opts,
-                index=type_opts.index(st.session_state.viewer_draw_type),
+                index=type_opts.index(prev_type),
                 format_func=lambda t: f"{icons[t]} {t}",
                 label_visibility="collapsed",
                 key="draw_type_sel",
             )
-        with tc3:
-            draw_type = st.session_state.viewer_draw_type
-            rgb = BLOCK_COLORS[draw_type]
-            st.markdown(
-                f"<div style='padding:6px 10px;background:rgba({rgb[0]},{rgb[1]},{rgb[2]},0.2);"
-                f"border:1px solid {TYPE_COLORS_HEX[draw_type]};border-radius:6px;"
-                f"font-size:13px;color:{TYPE_COLORS_HEX[draw_type]}'>"
-                f"Нарисуй прямоугольник на изображении</div>",
-                unsafe_allow_html=True,
-            )
+            if new_type != prev_type:
+                st.session_state.viewer_draw_type    = new_type
+                st.session_state.viewer_draw_pt1     = None
+                st.session_state.viewer_draw_preview = None
 
     # ── Изображение ───────────────────────────────────────────────────────
-    page_img, orig_w, orig_h = fetch_page_image(doc_id, st.session_state.viewer_page)
+    page_img, orig_w, orig_h, scale = fetch_page_image(
+        doc_id, st.session_state.viewer_page
+    )
 
     if page_img:
         st.session_state.viewer_orig_w = orig_w
         st.session_state.viewer_orig_h = orig_h
-        bbox_scale = page_img.width / orig_w if orig_w else 1.0
+
+        draw_type    = st.session_state.viewer_draw_type
+        draw_pt1     = st.session_state.viewer_draw_pt1
+        draw_preview = st.session_state.viewer_draw_preview
 
         annotated = draw_blocks_on_image(
             page_img, all_blocks,
             st.session_state.viewer_page, show_types,
             st.session_state.viewer_selected_block,
-            bbox_scale=bbox_scale,
+            scale=scale,
+            draw_pt1=draw_pt1,
+            draw_preview=draw_preview,
+            draw_type=draw_type,
         )
 
+        img_w = annotated.width
+
+        # Единый виджет — и для выбора, и для рисования
+        coords = streamlit_image_coordinates(
+            annotated,
+            width=img_w,   # явный int → без use_column_width, без deprecated warning
+            key=f"viewer_{doc_id}_{st.session_state.viewer_page}",
+        )
+
+        # ── Обработка клика ───────────────────────────────────────────────
+        if coords is not None:
+            click_hash = f"{coords['x']}_{coords['y']}"
+            is_new_click = click_hash != st.session_state.viewer_draw_last_hash
+
+            if is_new_click:
+                st.session_state.viewer_draw_last_hash = click_hash
+                # Координаты в пространстве оригинала
+                ox = int(coords["x"] / scale)
+                oy = int(coords["y"] / scale)
+
+                if st.session_state.viewer_draw_mode:
+                    # ── DRAW MODE: 2 клика = bbox ──────────────────────
+                    if draw_pt1 is None:
+                        # Первый угол
+                        st.session_state.viewer_draw_pt1     = (ox, oy)
+                        st.session_state.viewer_draw_preview = None
+                        st.rerun()
+                    else:
+                        # Второй угол → строим bbox
+                        ox1 = min(draw_pt1[0], ox)
+                        oy1 = min(draw_pt1[1], oy)
+                        ox2 = max(draw_pt1[0], ox)
+                        oy2 = max(draw_pt1[1], oy)
+                        st.session_state.viewer_draw_preview = [ox1, oy1, ox2, oy2]
+                        st.rerun()
+                else:
+                    # ── SELECT MODE: клик по блоку ─────────────────────
+                    clicked = None
+                    for b in all_blocks:
+                        if b.get("page_num") != st.session_state.viewer_page:
+                            continue
+                        if b.get("block_type") not in show_types:
+                            continue
+                        bx = b.get("bbox", [])
+                        if len(bx) == 4 and bx[0] <= ox <= bx[2] and bx[1] <= oy <= bx[3]:
+                            clicked = b["block_id"]
+                            break
+                    if clicked and clicked != st.session_state.viewer_selected_block:
+                        st.session_state.viewer_selected_block = clicked
+                        st.session_state.viewer_edit_mode      = False
+                        st.session_state.viewer_confirm_delete = False
+                        st.rerun()
+
+        # ── Подсказки и кнопки режима рисования ──────────────────────────
         if st.session_state.viewer_draw_mode:
-            # ── DRAWING MODE ──────────────────────────────────────────────
-            draw_type   = st.session_state.viewer_draw_type
-            stroke_hex  = TYPE_COLORS_HEX[draw_type]
-            rgb         = BLOCK_COLORS[draw_type]
-            fill_rgba   = f"rgba({rgb[0]},{rgb[1]},{rgb[2]},0.25)"
+            draw_preview = st.session_state.viewer_draw_preview  # обновлённое
 
-            canvas_result = st_canvas(
-                fill_color=fill_rgba,
-                stroke_width=2,
-                stroke_color=stroke_hex,
-                background_image=annotated,   # PIL Image — уже аннотированный
-                update_streamlit=True,
-                height=annotated.height,
-                width=annotated.width,
-                drawing_mode="rect",
-                display_toolbar=False,        # убираем лишние кнопки
-                key=f"canvas_{doc_id}_{st.session_state.viewer_page}_{st.session_state.viewer_canvas_key}",
-            )
-
-            # Обрабатываем нарисованные прямоугольники
-            objects = []
-            if canvas_result.json_data is not None:
-                objects = canvas_result.json_data.get("objects", [])
-
-            if objects:
-                last = objects[-1]
-                sx = last.get("scaleX", 1.0)
-                sy = last.get("scaleY", 1.0)
-                # Canvas координаты (display-пиксели)
-                cx1 = int(last["left"])
-                cy1 = int(last["top"])
-                cx2 = int(last["left"] + last["width"]  * sx)
-                cy2 = int(last["top"]  + last["height"] * sy)
-                # Переводим в оригинальные координаты документа
-                ox1 = max(0, int(cx1 / bbox_scale))
-                oy1 = max(0, int(cy1 / bbox_scale))
-                ox2 = min(orig_w, int(cx2 / bbox_scale))
-                oy2 = min(orig_h, int(cy2 / bbox_scale))
-
+            if draw_pt1 is None:
+                st.info("🖱 **Кликни первый угол** нового блока", icon=None)
+            elif draw_preview is None:
+                pt = st.session_state.viewer_draw_pt1
+                ox_lim = st.session_state.viewer_orig_w or orig_w
+                oy_lim = st.session_state.viewer_orig_h or orig_h
+                st.info(
+                    f"🖱 Первый угол: **({pt[0]}, {pt[1]})**  "
+                    f"— теперь кликни **второй угол**", icon=None
+                )
+                if st.button("❌ Сбросить точку", key="reset_pt1"):
+                    st.session_state.viewer_draw_pt1 = None
+                    st.session_state.viewer_draw_last_hash = None
+            else:
+                ox1, oy1, ox2, oy2 = draw_preview
+                rgb = BLOCK_COLORS[draw_type]
                 st.markdown(
-                    f"<div style='margin:6px 0;padding:6px 10px;"
+                    f"<div style='padding:8px 12px;"
                     f"background:rgba({rgb[0]},{rgb[1]},{rgb[2]},0.15);"
-                    f"border-left:3px solid {stroke_hex};border-radius:4px;font-size:12px'>"
-                    f"📐 <b>{draw_type}</b> · bbox: [{ox1}, {oy1}, {ox2}, {oy2}] "
-                    f"· размер: {ox2-ox1}×{oy2-oy1} px</div>",
+                    f"border-left:3px solid {TYPE_HEX[draw_type]};border-radius:4px;"
+                    f"font-size:13px;margin:4px 0'>"
+                    f"📐 <b>{draw_type}</b> · [{ox1}, {oy1}, {ox2}, {oy2}] "
+                    f"· {ox2-ox1}×{oy2-oy1} px</div>",
                     unsafe_allow_html=True,
                 )
-
                 ab1, ab2 = st.columns([2, 1])
                 with ab1:
                     if st.button("✅ Добавить блок", use_container_width=True,
                                  type="primary", key="btn_canvas_add"):
-                        if ox2 > ox1 and oy2 > oy1:
-                            try:
-                                resp = httpx.post(
-                                    f"{BACKEND_URL}/processing/{doc_id}/blocks",
-                                    json={
-                                        "block_type": draw_type,
-                                        "page_num":   st.session_state.viewer_page,
-                                        "bbox":       [ox1, oy1, ox2, oy2],
-                                    },
-                                    timeout=10,
-                                )
-                                if resp.status_code == 200:
-                                    fetch_blocks.clear()
-                                    st.session_state.viewer_canvas_key += 1
-                                    st.session_state.viewer_selected_block = resp.json().get("block_id")
-                                    st.session_state.viewer_draw_mode = False
-                                    st.success(f"✅ Создан: {resp.json().get('block_id','')[:24]}")
-                                    st.rerun()
-                                else:
-                                    st.error(f"Ошибка {resp.status_code}: {resp.text[:80]}")
-                            except Exception as e:
-                                st.error(str(e))
-                        else:
-                            st.warning("Нарисуй прямоугольник на изображении")
+                        try:
+                            resp = httpx.post(
+                                f"{BACKEND_URL}/processing/{doc_id}/blocks",
+                                json={
+                                    "block_type": draw_type,
+                                    "page_num":   st.session_state.viewer_page,
+                                    "bbox":       [ox1, oy1, ox2, oy2],
+                                },
+                                timeout=10,
+                            )
+                            if resp.status_code == 200:
+                                new_id = resp.json().get("block_id")
+                                fetch_blocks.clear()
+                                st.session_state.viewer_draw_pt1     = None
+                                st.session_state.viewer_draw_preview = None
+                                st.session_state.viewer_draw_last_hash = None
+                                st.session_state.viewer_draw_mode    = False
+                                st.session_state.viewer_selected_block = new_id
+                                st.rerun()
+                            else:
+                                st.error(f"Ошибка {resp.status_code}: {resp.text[:80]}")
+                        except Exception as e:
+                            st.error(str(e))
                 with ab2:
-                    if st.button("🗑 Сбросить", use_container_width=True, key="btn_canvas_clear"):
-                        st.session_state.viewer_canvas_key += 1
+                    if st.button("🔄 Перерисовать", use_container_width=True, key="btn_redraw"):
+                        st.session_state.viewer_draw_pt1     = None
+                        st.session_state.viewer_draw_preview = None
+                        st.session_state.viewer_draw_last_hash = None
                         st.rerun()
-        else:
-            # ── SELECT MODE ───────────────────────────────────────────────
-            coords = streamlit_image_coordinates(
-                annotated,
-                use_column_width=False,
-                key=f"viewer_{doc_id}_{st.session_state.viewer_page}",
-            )
-            if coords:
-                cx = int(coords["x"] / bbox_scale)
-                cy = int(coords["y"] / bbox_scale)
-                clicked = None
-                for b in all_blocks:
-                    if b.get("page_num") != st.session_state.viewer_page:
-                        continue
-                    if b.get("block_type") not in show_types:
-                        continue
-                    bx = b.get("bbox", [])
-                    if len(bx) == 4 and bx[0] <= cx <= bx[2] and bx[1] <= cy <= bx[3]:
-                        clicked = b["block_id"]
-                        break
-                if clicked and clicked != st.session_state.viewer_selected_block:
-                    st.session_state.viewer_selected_block = clicked
-                    st.session_state.viewer_edit_mode      = False
-                    st.session_state.viewer_confirm_delete = False
-                    st.rerun()
     else:
         st.warning("Изображение страницы недоступно")
 
@@ -384,10 +436,9 @@ with col_main:
         and b.get("block_type") in show_types
     ]
     if page_blocks_filtered:
-        cols_per_row = 4
-        for row in [page_blocks_filtered[i:i+cols_per_row]
-                    for i in range(0, len(page_blocks_filtered), cols_per_row)]:
-            rcols = st.columns(cols_per_row)
+        for row in [page_blocks_filtered[i:i+4]
+                    for i in range(0, len(page_blocks_filtered), 4)]:
+            rcols = st.columns(4)
             for col, block in zip(rcols, row):
                 bid     = block["block_id"]
                 btype   = block.get("block_type", "?")
@@ -423,26 +474,26 @@ with col_right:
             draw_type = st.session_state.viewer_draw_type
             rgb = BLOCK_COLORS[draw_type]
             st.markdown(
-                f"<div style='padding:10px;background:rgba({rgb[0]},{rgb[1]},{rgb[2]},0.1);"
-                f"border:1px solid {TYPE_COLORS_HEX[draw_type]};border-radius:8px'>"
-                f"<b>✏️ Режим рисования</b><br><br>"
-                f"1. Выбери тип блока слева<br>"
-                f"2. Нарисуй прямоугольник на изображении<br>"
+                f"<div style='padding:12px;background:rgba({rgb[0]},{rgb[1]},{rgb[2]},0.1);"
+                f"border:1px solid {TYPE_HEX[draw_type]};border-radius:8px'>"
+                f"<b>✏️ Режим рисования ({draw_type})</b><br><br>"
+                f"1. Кликни на <b>первый угол</b> bbox<br>"
+                f"2. Кликни на <b>второй угол</b><br>"
                 f"3. Нажми <b>«Добавить блок»</b></div>",
                 unsafe_allow_html=True,
             )
         else:
-            st.caption("Кликни на блок или выбери из списка ниже")
+            st.caption("Кликни блок на изображении или выбери из списка")
         st.markdown("---")
         st.markdown("**📤 Экспорт**")
         for fmt, icon in [("markdown", "📝"), ("json", "🗂"), ("csv", "📊")]:
             if st.button(f"{icon} {fmt.upper()}", key=f"exp_{fmt}", use_container_width=True):
                 try:
-                    r = httpx.post(
+                    resp = httpx.post(
                         f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}", timeout=30
                     )
-                    if r.status_code == 200:
-                        st.success(r.json().get("message", "Готово"))
+                    if resp.status_code == 200:
+                        st.success(resp.json().get("message", "Готово"))
                     else:
                         st.error("Ошибка экспорта")
                 except Exception as e:
@@ -470,17 +521,20 @@ with col_right:
     st.markdown(f"Conf: `{conf:.2f}`")
 
     try:
-        r = httpx.get(f"{BACKEND_URL}/documents/{doc_id}/block-image/{selected_id}", timeout=10)
-        if r.status_code == 200:
-            st.image(r.content, use_container_width=True)
+        resp = httpx.get(
+            f"{BACKEND_URL}/documents/{doc_id}/block-image/{selected_id}", timeout=10
+        )
+        if resp.status_code == 200:
+            st.image(resp.content, width="stretch")   # ← исправлен deprecated
     except Exception:
         pass
 
-    # ── ГЕОМЕТРИЯ И ТИП ───────────────────────────────────────────────────
+    # ── Геометрия и тип ───────────────────────────────────────────────────
     with st.expander("✏️ Геометрия и тип", expanded=False):
         type_list = ["text", "table", "formula", "figure"]
         edit_btype = st.selectbox(
-            "Тип блока", type_list,
+            "Тип",
+            type_list,
             index=type_list.index(btype) if btype in type_list else 0,
             key=f"edit_btype_{selected_id}",
         )
@@ -505,8 +559,8 @@ with col_right:
                     )
                     if resp.status_code == 200:
                         fetch_blocks.clear()
+                        all_blocks[:] = fetch_blocks(doc_id)
                         st.success("✅ Сохранено")
-                        st.rerun()
                     else:
                         st.error(f"Ошибка: {resp.text[:80]}")
                 except Exception as e:
@@ -514,11 +568,10 @@ with col_right:
             else:
                 st.warning("x2 > x1 и y2 > y1!")
 
-    # ── УДАЛИТЬ БЛОК ─────────────────────────────────────────────────────
+    # ── Удалить блок ──────────────────────────────────────────────────────
     if not st.session_state.viewer_confirm_delete:
         if st.button("🗑 Удалить блок", use_container_width=True, key="btn_del"):
             st.session_state.viewer_confirm_delete = True
-            st.rerun()
     else:
         st.warning("⚠️ Удалить безвозвратно?")
         dc1, dc2 = st.columns(2)
@@ -530,17 +583,17 @@ with col_right:
                     )
                 except Exception:
                     pass
-                st.session_state.viewer_selected_block = None
-                st.session_state.viewer_confirm_delete = False
+                st.session_state.viewer_selected_block  = None
+                st.session_state.viewer_confirm_delete  = False
                 fetch_blocks.clear()
                 st.rerun()
         with dc2:
             if st.button("❌ Нет", use_container_width=True, key="btn_del_no"):
                 st.session_state.viewer_confirm_delete = False
-                st.rerun()
 
     st.markdown("---")
 
+    # ── OCR Output ────────────────────────────────────────────────────────
     if output:
         st.markdown("**OCR Output:**")
         if btype == "table":
@@ -563,22 +616,26 @@ with col_right:
             try:    st.latex(clean)
             except: st.code(clean)
         else:
-            st.text_area("", value=output, height=120,
-                         disabled=not st.session_state.viewer_edit_mode,
-                         key="output_display")
+            st.text_area(
+                "", value=output, height=120,
+                disabled=not st.session_state.viewer_edit_mode,
+                key="output_display",
+            )
     else:
         st.caption("Нет OCR output")
 
     if st.session_state.viewer_edit_mode and btype not in ("table", "formula"):
-        new_output = st.text_area("✏️ Редактировать:", value=output, height=120, key="edit_output")
+        new_output = st.text_area(
+            "✏️ Редактировать:", value=output, height=120, key="edit_output"
+        )
         if st.button("💾 Сохранить текст", use_container_width=True,
                      type="primary", key="save_text"):
             try:
-                r = httpx.patch(
+                resp = httpx.patch(
                     f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
                     json={"output": new_output, "status": "accepted"}, timeout=5,
                 )
-                if r.status_code == 200:
+                if resp.status_code == 200:
                     fetch_blocks.clear()
                     st.session_state.viewer_edit_mode = False
                     st.success("✅ Сохранено")
@@ -599,7 +656,6 @@ with col_right:
             st.rerun()
         if st.button("✏️ Править", use_container_width=True, key="btn_edit"):
             st.session_state.viewer_edit_mode = not st.session_state.viewer_edit_mode
-            st.rerun()
     with a2:
         if st.button("🔖 В Review", use_container_width=True, key="btn_review"):
             httpx.patch(f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
@@ -620,8 +676,10 @@ with col_right:
     for fmt, icon in [("markdown", "📝"), ("json", "🗂"), ("csv", "📊")]:
         if st.button(f"{icon} {fmt.upper()}", key=f"exp2_{fmt}", use_container_width=True):
             try:
-                r = httpx.post(f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}", timeout=30)
-                if r.status_code == 200:
-                    st.success(r.json().get("message", "Готово"))
+                resp = httpx.post(
+                    f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}", timeout=30
+                )
+                if resp.status_code == 200:
+                    st.success(resp.json().get("message", "Готово"))
             except Exception as e:
                 st.error(str(e))
