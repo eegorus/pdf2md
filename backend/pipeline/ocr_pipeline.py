@@ -118,6 +118,9 @@ class OCRPipeline:
                 output = self._process_block(image, block_type)
 
                 block["output"] = output
+                # Сохраняем оригинал один раз — original_output нужен для training pairs
+                if not block.get("original_output"):
+                    block["original_output"] = output
                 block["status"] = "ocr_done"
                 stats["processed"] += 1
                 stats["by_type"][block_type] = (

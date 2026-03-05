@@ -285,6 +285,9 @@ async def patch_block(doc_id: str, block_id: str, payload: dict = Body(...)):
     updated = False
     for block in blocks:
         if block.get("block_id") == block_id:
+            # original_output не трогаем — это эталон для training pairs
+            if "output" in payload and not block.get("original_output"):
+                block["original_output"] = block.get("output") or ""
             for field in ("status", "output", "block_type", "bbox"):
                 if field in payload:
                     block[field] = payload[field]

@@ -44,7 +44,7 @@ def fetch_blocks(doc_id: str):
         return []
 
 @st.cache_data(ttl=60)
-def fetch_page_image(doc_id: str, page_num: int, max_w: int = 520, max_h: int = 680):
+def fetch_page_image(doc_id: str, page_num: int, max_w: int = 740, max_h: int = 960):
     """Возвращает (resized_img, orig_w, orig_h, scale) или (None, 0, 0, 1.0)."""
     try:
         r = httpx.get(
@@ -157,7 +157,7 @@ try:
 except Exception:
     total_pages = 1
 
-col_left, col_main, col_right = st.columns([0.75, 2.5, 1.5])
+col_left, col_main, col_right = st.columns([0.65, 3.0, 1.35])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LEFT — документы, фильтры, статистика
@@ -649,15 +649,18 @@ with col_right:
     st.markdown("**Действия:**")
     a1, a2 = st.columns(2)
     with a1:
-        if st.button("✅ Принять", use_container_width=True, key="btn_accept"):
+        if st.button("✅ Принять", use_container_width=True, key="btn_accept",
+                     help="Отметить блок как проверенный (без правки)"):
             httpx.patch(f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
                         json={"status": "accepted"}, timeout=5)
             fetch_blocks.clear()
             st.rerun()
-        if st.button("✏️ Править", use_container_width=True, key="btn_edit"):
+        if st.button("✏️ Править", use_container_width=True, key="btn_edit",
+                     help="Открыть редактор OCR output"):
             st.session_state.viewer_edit_mode = not st.session_state.viewer_edit_mode
     with a2:
-        if st.button("🔖 В Review", use_container_width=True, key="btn_review"):
+        if st.button("🔖 В Review", use_container_width=True, key="btn_review",
+                     help="Пометить как требующий проверки"):
             httpx.patch(f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
                         json={"status": "needs_review"}, timeout=5)
             fetch_blocks.clear()
@@ -670,6 +673,49 @@ with col_right:
                     st.session_state.viewer_selected_block = page_ids[idx + 1]
                     st.session_state.viewer_edit_mode = False
                     st.rerun()
+
+    # ── КНОПКА "В ОБУЧЕНИЕ" ───────────────────────────────────────────────
+    # Показываем только когда пользователь что-то правил
+    if st.session_state.viewer_edit_mode or block.get("original_output"):
+        st.markdown("---")
+        orig = block.get("original_output") or output
+        cur  = output
+
+        if orig != cur:
+            # Уже есть расхождение — предлагаем сохранить как пару
+            st.markdown(
+                "<div style='padding:8px;background:rgba(22,163,74,0.1);"
+                "border-left:3px solid #16a34a;border-radius:4px;font-size:12px'>"
+                "📊 Оригинал модели и текущий output отличаются</div>",
+                unsafe_allow_html=True,
+            )
+            if st.button("📚 В обучение", use_container_width=True,
+                         type="primary", key="btn_to_train"):
+                try:
+                    resp = httpx.post(
+                        f"{BACKEND_URL}/training/pairs",
+                        json={
+                            "block_id":           selected_id,
+                            "doc_id":             doc_id,
+                            "block_type":         btype,
+                            "source_page":        block.get("page_num"),
+                            "bbox":               block.get("bbox"),
+                            "image_path":         block.get("image_path"),
+                            "local_model_output": orig,
+                            "target_output":      cur,
+                        },
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        st.success(
+                            f"✅ Пара #{data.get('pair_id','?')[:16]} сохранена. "
+                            f"Всего: {data.get('total_pairs', '?')} пар"
+                        )
+                    else:
+                        st.error(f"Ошибка: {resp.json().get('detail', resp.text[:80])}")
+                except Exception as e:
+                    st.error(str(e))
 
     st.markdown("---")
     st.markdown("**📤 Экспорт**")
