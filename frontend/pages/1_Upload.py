@@ -37,7 +37,22 @@ if uploaded:
                 st.error(f"❌ Ошибка загрузки: {e}")
                 st.stop()
 
-        # 2. Layout detection
+        # 2. Ждём split_done — сплит идёт в фоне после upload
+        with st.spinner("Разбиваем PDF на страницы..."):
+            for _ in range(120):  # max 120 сек
+                import time as _time
+                _time.sleep(1)
+                try:
+                    r = httpx.get(f"{BACKEND_URL}/processing/{doc_id}/status", timeout=5)
+                    if r.json().get("status") == "split_done":
+                        break
+                except Exception:
+                    pass
+            else:
+                st.error("❌ PDF не разбился на страницы за 120 сек — проверь логи backend")
+                st.stop()
+
+        # 3. Layout detection
         with st.spinner("Запускаем layout detection..."):
             try:
                 r = httpx.post(
@@ -49,7 +64,7 @@ if uploaded:
                 st.error(f"❌ Ошибка запуска pipeline: {e}")
                 st.stop()
 
-        # 3. Polling layout detection
+        # 4. Polling layout detection
         st.markdown("**Layout Detection**")
         progress_bar = st.progress(0, text="Определяем блоки...")
         for _ in range(60):  # max 5 минут

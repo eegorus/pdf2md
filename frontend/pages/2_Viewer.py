@@ -692,6 +692,12 @@ with col_right:
             if st.button("📚 В обучение", use_container_width=True,
                          type="primary", key="btn_to_train"):
                 try:
+                    # Если пользователь в режиме правки — берём текст из textarea
+                    edit_key = f"edit_output_{selected_id}"
+                    edited_text = st.session_state.get(edit_key, cur)
+                    train_orig   = orig if orig != cur else output
+                    train_target = edited_text if edited_text != train_orig else cur
+
                     resp = httpx.post(
                         f"{BACKEND_URL}/training/pairs",
                         json={
@@ -701,8 +707,8 @@ with col_right:
                             "source_page":        block.get("page_num"),
                             "bbox":               block.get("bbox"),
                             "image_path":         block.get("image_path"),
-                            "local_model_output": orig,
-                            "target_output":      cur,
+                            "local_model_output": train_orig,
+                            "target_output":      train_target,
                         },
                         timeout=10,
                     )

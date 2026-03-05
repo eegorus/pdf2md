@@ -49,49 +49,63 @@ def _run_layout_detection(doc_id: str):
         confidence_threshold=float(os.getenv("BLOCK_CONFIDENCE_THRESHOLD", "0.3")),
     )
 
-    all_blocks = []
-    for page_info in pages:
-        page_num  = page_info["page_num"]
-        page_path = page_info["path"]
+    try:
+        all_blocks = []
+        for page_info in pages:
+            page_num  = page_info["page_num"]
+            page_path = page_info["path"]
 
-        if not Path(page_path).exists():
-            logger.warning(f"Страница {page_num} не найдена: {page_path}")
-            continue
+            if not Path(page_path).exists():
+                logger.warning(f"Страница {page_num} не найдена: {page_path}")
+                continue
 
-        image  = Image.open(page_path).convert("RGB")
-        blocks = detector.detect(image, page_num=page_num)
+            image  = Image.open(page_path).convert("RGB")
+            blocks = detector.detect(image, page_num=page_num)
 
-        for block in blocks:
-            # Сохраняем изображение блока
-            block_img_path = detector.save_block_image(
-                image, block, doc_id, DATA_DIR
-            )
-            all_blocks.append({
-                "block_id":   f"{doc_id}_p{page_num:03d}_{block.block_type}_{block.block_idx:03d}",
-                "page_num":   page_num,
-                "block_type": block.block_type,
-                "bbox":       [block.x1, block.y1, block.x2, block.y2],
-                "confidence": block.confidence,
-                "raw_class":  block.raw_class,
-                "image_path": block_img_path,
-                "status":     "detected",
-                "output":     None,
-            })
+            # Очищаем VRAM после каждой страницы
+            import torch
+            torch.cuda.empty_cache()
 
-    # Сохраняем результаты
-    results_dir = DATA_DIR / "results" / doc_id
-    results_dir.mkdir(parents=True, exist_ok=True)
-    blocks_file = results_dir / "blocks.json"
-    blocks_file.write_text(
-        json.dumps(all_blocks, ensure_ascii=False, indent=2)
-    )
+            for block in blocks:
+                # Сохраняем изображение блока
+                block_img_path = detector.save_block_image(
+                    image, block, doc_id, DATA_DIR
+                )
+                all_blocks.append({
+                    "block_id":   f"{doc_id}_p{page_num:03d}_{block.block_type}_{block.block_idx:03d}",
+                    "page_num":   page_num,
+                    "block_type": block.block_type,
+                    "bbox":       [block.x1, block.y1, block.x2, block.y2],
+                    "confidence": block.confidence,
+                    "raw_class":  block.raw_class,
+                    "image_path": block_img_path,
+                    "status":     "detected",
+                    "output":     None,
+                })
 
-    # Обновляем статус документа
-    meta["status"]       = "layout_done"
-    meta["total_blocks"] = len(all_blocks)
-    meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+        # Сохраняем результаты
+        results_dir = DATA_DIR / "results" / doc_id
+        results_dir.mkdir(parents=True, exist_ok=True)
+        blocks_file = results_dir / "blocks.json"
+        blocks_file.write_text(
+            json.dumps(all_blocks, ensure_ascii=False, indent=2)
+        )
 
-    logger.info(f"✅ Layout detection: {doc_id} — {len(all_blocks)} блоков")
+        # Обновляем статус документа
+        meta["status"]       = "layout_done"
+        meta["total_blocks"] = len(all_blocks)
+        meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+
+        logger.info(f"✅ Layout detection: {doc_id} — {len(all_blocks)} блоков")
+
+    except Exception as e:
+        # При любой ошибке (OOM, etc) — пишем статус error чтобы UI не завис
+        logger.error(f"❌ Layout detection failed для {doc_id}: {e}", exc_info=True)
+        import torch
+        torch.cuda.empty_cache()
+        meta["status"] = "error"
+        meta["error"]  = str(e)
+        meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
 
 
 @router.post("/{doc_id}/start", summary="Запустить layout detection")

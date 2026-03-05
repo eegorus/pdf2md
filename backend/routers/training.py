@@ -140,3 +140,110 @@ async def switch_model(payload: dict = Body(...)):
     active_file.write_text(json.dumps({"version": version, "switched_at": datetime.utcnow().isoformat()}))
 
     return {"version": version, "active": True}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /training/start  — запуск fine-tuning в фоне
+# ──────────────────────────────────────────────────────────────────────────────
+import subprocess, threading
+
+_finetune_state = {"status": "idle", "version": None, "log": "", "pid": None}
+
+
+def _run_finetune(version: str, epochs: int, data_path: str):
+    global _finetune_state
+    _finetune_state.update({"status": "running", "log": "Запуск контейнера finetune...\n"})
+    try:
+        cmd = [
+            "docker", "compose", "--profile", "finetune",
+            "run", "--rm", "finetune",
+            "python", "/workspace/train.py",
+            "--model_id", "Qwen/Qwen2.5-VL-7B-Instruct",
+            "--data_path", data_path,
+            "--output_dir", f"/workspace/models/versions/{version}",
+            "--num_train_epochs", str(epochs),
+            "--use_qlora", "true",
+        ]
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, cwd="/app"
+        )
+        _finetune_state["pid"] = proc.pid
+        log_lines = []
+        for line in proc.stdout:
+            log_lines.append(line)
+            _finetune_state["log"] = "".join(log_lines[-50:])  # последние 50 строк
+        proc.wait()
+        if proc.returncode == 0:
+            _finetune_state.update({"status": "done", "version": version})
+            # Автоматически переключаем на новую версию
+            active = DATA_DIR / "models" / "active_version.json"
+            active.parent.mkdir(parents=True, exist_ok=True)
+            active.write_text(json.dumps({"version": version, "switched_at": datetime.utcnow().isoformat()}))
+        else:
+            _finetune_state["status"] = "error"
+    except Exception as e:
+        _finetune_state.update({"status": "error", "log": str(e)})
+
+
+@router.post("/start", summary="Запустить fine-tuning")
+async def start_finetune(payload: dict = Body(...)):
+    global _finetune_state
+    if _finetune_state["status"] == "running":
+        raise HTTPException(status_code=409, detail="Fine-tuning уже запущен")
+
+    pairs = _read_pairs()
+    min_pairs = 10  # минимум для запуска (50 для продакшена)
+    if len(pairs) < min_pairs:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Нужно минимум {min_pairs} пар, сейчас: {len(pairs)}"
+        )
+
+    version = payload.get("version") or f"v{datetime.utcnow().strftime('%Y%m%d_%H%M')}"
+    epochs  = int(payload.get("epochs", 3))
+
+    # Строим датасет
+    dataset_path = DATA_DIR / "training" / "train_dataset.json"
+    dataset = []
+    for p in pairs:
+        dataset.append({
+            "messages": [
+                {"role": "system",  "content": "Ты — OCR-движок для извлечения содержимого блоков из PDF-отчётов."},
+                {"role": "user",    "content": [
+                    {"type": "image", "image": p.get("image_path", "")},
+                    {"type": "text",  "text": f"Извлеки содержимое блока типа '{p.get('block_type','text')}'"},
+                ]},
+                {"role": "assistant", "content": p["target_output"]},
+            ]
+        })
+    dataset_path.write_text(json.dumps(dataset, ensure_ascii=False, indent=2))
+
+    _finetune_state = {"status": "starting", "version": version, "log": "", "pid": None}
+    thread = threading.Thread(
+        target=_run_finetune,
+        args=(version, epochs, str(dataset_path)),
+        daemon=True,
+    )
+    thread.start()
+
+    return {"status": "starting", "version": version, "pairs_count": len(pairs), "epochs": epochs}
+
+
+@router.get("/status", summary="Статус fine-tuning")
+async def finetune_status():
+    versions = []
+    if MODELS_DIR.exists():
+        versions = sorted([d.name for d in MODELS_DIR.iterdir() if d.is_dir()])
+    active_file = DATA_DIR / "models" / "active_version.json"
+    active = None
+    if active_file.exists():
+        try:
+            active = json.loads(active_file.read_text()).get("version")
+        except Exception:
+            pass
+    return {
+        **_finetune_state,
+        "versions":       versions,
+        "active_version": active,
+    }

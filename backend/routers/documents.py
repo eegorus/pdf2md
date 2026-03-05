@@ -158,3 +158,21 @@ async def get_block_image(doc_id: str, block_id: str):
         raise HTTPException(status_code=404, detail="Изображение блока не найдено")
 
     return FileResponse(str(image_path), media_type="image/png")
+
+
+@router.delete("/{doc_id}", summary="Удалить документ и все его данные")
+async def delete_document(doc_id: str):
+    import shutil
+    deleted = []
+    errors  = []
+    for folder in ["uploads", "pages", "blocks", "results"]:
+        path = DATA_DIR / folder / doc_id
+        if path.exists():
+            try:
+                shutil.rmtree(path)
+                deleted.append(str(path))
+            except Exception as e:
+                errors.append(str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
+    return {"doc_id": doc_id, "deleted_paths": deleted, "errors": errors}
