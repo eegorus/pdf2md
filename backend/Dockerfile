@@ -33,6 +33,13 @@ RUN pip uninstall -y texteller 2>/dev/null || true \
     && pip install --no-cache-dir -e . \
     && rm -rf /opt/texteller/.git
 
+# ── Quick Parsers (Быстрый режим) ─────────────────────────────────────
+RUN pip install --no-cache-dir \
+    marker-pdf \
+    docling \
+    llama-parse \
+    anthropic
+
 # ── Environment ───────────────────────────────────────────────────────
 RUN pip install --no-cache-dir --force-reinstall "transformers==4.51.3"
 ENV PYTHONPATH=/app
