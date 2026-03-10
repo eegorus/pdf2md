@@ -1,204 +1,294 @@
 import streamlit as st
 import httpx
-import time
 import os
+import time
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
 st.set_page_config(page_title="Upload — PRMS", layout="wide")
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def api(method, path, **kw):
+    try:
+        r = httpx.request(method, f"{BACKEND_URL}{path}", timeout=60, **kw)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        st.error(f"API {path}: {e}")
+        return None
+
+# ── Session state defaults ────────────────────────────────────────────────────
+for k, v in {
+    "upload_doc_id":   None,
+    "upload_doc_name": None,
+    "upload_stage":    "upload",   # upload | mode | quick_running | quick_done | detail_ready
+    "quick_parser":    "pymupdf",
+    "quick_api_key":   "",
+}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# ── Title ─────────────────────────────────────────────────────────────────────
 st.title("📤 Загрузка PDF")
 
-# ─── ЗАГРУЗКА ФАЙЛА ───────────────────────────────────────────────────────────
-uploaded = st.file_uploader(
-    "Выберите PDF файл",
-    type=["pdf"],
-    help="Максимальный размер: 100 MB"
-)
+# ══════════════════════════════════════════════════════════════════════════════
+# ЭТАП 0 — загрузка файла
+# ══════════════════════════════════════════════════════════════════════════════
+if st.session_state.upload_stage == "upload":
+    st.caption("Выберите PDF файл")
+    uploaded = st.file_uploader("", type=["pdf"], label_visibility="collapsed")
 
-if uploaded:
-    st.info(f"📄 {uploaded.name} · {uploaded.size / 1024 / 1024:.1f} MB")
-
-    if st.button("🚀 Загрузить и обработать", type="primary", use_container_width=True):
-        # 1. Upload
-        with st.spinner("Загружаем PDF..."):
-            try:
-                r = httpx.post(
-                    f"{BACKEND_URL}/documents/upload",
-                    files={"file": (uploaded.name, uploaded.getvalue(), "application/pdf")},
-                    timeout=60,
-                )
-                r.raise_for_status()
-                data = r.json()
-                doc_id = data["doc_id"]
-                st.session_state.current_doc_id = doc_id
-                st.session_state.current_doc_name = uploaded.name
-                st.success(f"✅ Загружен: `{doc_id}`")
-            except Exception as e:
-                st.error(f"❌ Ошибка загрузки: {e}")
+    if uploaded:
+        if st.button("📎 Загрузить и обработать", type="primary", use_container_width=True):
+            with st.spinner("Загружаем файл..."):
+                res = api("POST", "/documents/upload",
+                          files={"file": (uploaded.name, uploaded.getvalue(), "application/pdf")})
+            if not res:
                 st.stop()
 
-        # 2. Ждём split_done — сплит идёт в фоне после upload
-        with st.spinner("Разбиваем PDF на страницы..."):
-            for _ in range(120):  # max 120 сек
-                import time as _time
-                _time.sleep(1)
-                try:
-                    r = httpx.get(f"{BACKEND_URL}/processing/{doc_id}/status", timeout=5)
-                    if r.json().get("status") == "split_done":
+            doc_id = res["doc_id"]
+            st.session_state.upload_doc_id   = doc_id
+            st.session_state.upload_doc_name = uploaded.name
+            st.success(f"✅ Загружен: `{doc_id}`")
+
+            # Ждём split_done
+            with st.spinner("Разбиваем PDF на страницы..."):
+                for _ in range(120):
+                    time.sleep(1)
+                    r = api("GET", f"/processing/{doc_id}/status")
+                    if r and r.get("status") == "split_done":
                         break
-                except Exception:
-                    pass
-            else:
-                st.error("❌ PDF не разбился на страницы за 120 сек — проверь логи backend")
-                st.stop()
-
-        # 3. Layout detection
-        with st.spinner("Запускаем layout detection..."):
-            try:
-                r = httpx.post(
-                    f"{BACKEND_URL}/processing/{doc_id}/start",
-                    timeout=10,
-                )
-                r.raise_for_status()
-            except Exception as e:
-                st.error(f"❌ Ошибка запуска pipeline: {e}")
-                st.stop()
-
-        # 4. Polling layout detection
-        st.markdown("**Layout Detection**")
-        progress_bar = st.progress(0, text="Определяем блоки...")
-        for _ in range(60):  # max 5 минут
-            time.sleep(5)
-            try:
-                r = httpx.get(f"{BACKEND_URL}/processing/{doc_id}/status", timeout=5)
-                s = r.json()
-                status = s.get("status")
-                if status == "layout_done":
-                    total = s.get("total_blocks", 0)
-                    progress_bar.progress(1.0, text=f"✅ Найдено блоков: {total}")
-                    break
-                elif status == "error":
-                    st.error("❌ Layout detection завершился с ошибкой")
-                    st.stop()
                 else:
-                    progress_bar.progress(0.3, text=f"Статус: {status}...")
-            except Exception:
-                pass
-        else:
-            st.warning("⚠️ Layout detection занимает больше времени, проверь статус позже")
-            st.stop()
-
-        # 4. OCR
-        with st.spinner("Запускаем OCR..."):
-            try:
-                r = httpx.post(
-                    f"{BACKEND_URL}/processing/{doc_id}/ocr",
-                    timeout=10,
-                )
-                r.raise_for_status()
-            except Exception as e:
-                st.error(f"❌ Ошибка запуска OCR: {e}")
-                st.stop()
-
-        # 5. Polling OCR с прогрессом
-        st.markdown("**OCR Pipeline**")
-        ocr_bar = st.progress(0, text="Запускаем OCR...")
-        status_placeholder = st.empty()
-
-        for _ in range(120):  # max 10 минут
-            time.sleep(5)
-            try:
-                r = httpx.get(f"{BACKEND_URL}/processing/{doc_id}/status", timeout=5)
-                s = r.json()
-                status = s.get("status")
-                total = s.get("total_blocks", 1)
-                processed = s.get("processed_blocks", 0)
-                pct = s.get("progress_pct", 0) / 100
-
-                if status == "ocr_done":
-                    ocr_bar.progress(1.0, text=f"✅ OCR завершён: {total}/{total} блоков")
-                    break
-                elif status == "error":
-                    st.error("❌ OCR завершился с ошибкой")
+                    st.error("❌ PDF не разбился за 120 сек — проверь логи backend")
                     st.stop()
+
+            st.session_state.upload_stage = "mode"
+            st.rerun()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ЭТАП 1 — выбор режима
+# ══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.upload_stage == "mode":
+    doc_id   = st.session_state.upload_doc_id
+    doc_name = st.session_state.upload_doc_name
+
+    st.success(f"✅ Загружен: `{doc_id}` — **{doc_name}**")
+    st.markdown("---")
+    st.markdown("### Выберите режим обработки")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown(
+            "<div style='padding:20px;background:#1e293b;border-radius:12px;"
+            "border:2px solid #3b82f6;text-align:center'>"
+            "<div style='font-size:2em'>⚡</div>"
+            "<b style='font-size:1.1em'>Быстрый режим</b><br/><br/>"
+            "Весь PDF отправляется парсеру целиком.<br/>"
+            "Результат — Markdown через 1-5 минут.<br/><br/>"
+            "<i style='color:#94a3b8'>Хорошо для: стандартных отчётов,<br/>"
+            "когда структура не важна</i>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+        if st.button("⚡ Быстрый режим", use_container_width=True, type="primary"):
+            st.session_state.upload_stage = "quick_setup"
+            st.rerun()
+
+    with col2:
+        st.markdown(
+            "<div style='padding:20px;background:#1e293b;border-radius:12px;"
+            "border:2px solid #22c55e;text-align:center'>"
+            "<div style='font-size:2em'>🔬</div>"
+            "<b style='font-size:1.1em'>Детальный режим</b><br/><br/>"
+            "Постраничная разметка блоков с ручной<br/>"
+            "проверкой и выбором OCR для каждого типа.<br/><br/>"
+            "<i style='color:#94a3b8'>Хорошо для: PRMS-отчётов,<br/>"
+            "сложных таблиц и формул</i>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+        if st.button("🔬 Детальный режим", use_container_width=True):
+            # Запускаем layout detection и переходим в Markup
+            with st.spinner("Запускаем layout detection..."):
+                res = api("POST", f"/processing/{doc_id}/start")
+            if res:
+                st.session_state.upload_stage = "detail_layout"
+                st.rerun()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ЭТАП 2а — быстрый режим: настройка парсера
+# ══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.upload_stage == "quick_setup":
+    doc_id = st.session_state.upload_doc_id
+    st.success(f"✅ `{doc_id}` — {st.session_state.upload_doc_name}")
+    st.markdown("---")
+    st.markdown("### ⚡ Быстрый режим — выбор парсера")
+
+    parsers_data = api("GET", "/quick/parsers") or []
+
+    # Разбиваем на локальные и облачные
+    local_parsers = [p for p in parsers_data if not p["needs_api_key"]]
+    cloud_parsers = [p for p in parsers_data if p["needs_api_key"]]
+
+    st.markdown("#### 🖥 Локальные парсеры")
+    selected = None
+    for p in local_parsers:
+        avail  = p["available"]
+        badge  = "✅" if avail else "❌ не установлен"
+        color  = "#22c55e" if avail else "#475569"
+        border = "2px solid #22c55e" if (avail and st.session_state.quick_parser == p["name"]) else f"1px solid {color}"
+
+        col_a, col_b = st.columns([3, 1])
+        with col_a:
+            st.markdown(
+                f"<div style='padding:12px;background:#1e293b;border-radius:8px;border:{border}'>"
+                f"<b>{p['label']}</b> {badge}<br/>"
+                f"<small style='color:#94a3b8'>{p['description']}</small>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with col_b:
+            if avail:
+                if st.button("Выбрать", key=f"sel_{p['name']}", use_container_width=True):
+                    st.session_state.quick_parser = p["name"]
+                    st.session_state.quick_api_key = ""
+                    selected = p["name"]
+
+    st.markdown("#### ☁️ Облачные парсеры")
+    for p in cloud_parsers:
+        avail = p["available"]
+        if not avail:
+            st.caption(f"❌ {p['label']} — пакет не установлен")
+            continue
+
+        with st.expander(f"{p['label']} — {p['description']}"):
+            key_input = st.text_input(
+                "API Key", type="password",
+                key=f"key_{p['name']}",
+                placeholder="sk-..." if p["name"] == "gpt4o" else "...",
+            )
+            if st.button("Выбрать", key=f"sel_{p['name']}", use_container_width=True):
+                if not key_input:
+                    st.error("Введите API key")
                 else:
-                    ocr_bar.progress(
-                        max(pct, 0.01),
-                        text=f"Обработано: {processed}/{total} блоков"
-                    )
-                    status_placeholder.caption(f"Статус: `{status}`")
-            except Exception:
-                pass
-        else:
-            st.warning("⚠️ OCR занимает больше времени, проверь статус позже")
+                    st.session_state.quick_parser  = p["name"]
+                    st.session_state.quick_api_key = key_input
+                    selected = p["name"]
 
-        # 6. Итог
-        st.success("🎉 Документ полностью обработан!")
-        r = httpx.get(f"{BACKEND_URL}/processing/{doc_id}/status", timeout=5)
-        s = r.json()
+    st.markdown("---")
+    chosen = st.session_state.quick_parser
+    st.info(f"Выбран парсер: **{chosen}**")
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Страниц", s.get("page_count"))
-        col2.metric("Всего блоков", s.get("total_blocks"))
-        col3.metric("Обработано", s.get("processed_blocks"))
+    col_back, col_run = st.columns(2)
+    with col_back:
+        if st.button("← Назад", use_container_width=True):
+            st.session_state.upload_stage = "mode"
+            st.rerun()
+    with col_run:
+        if st.button("🚀 Запустить", type="primary", use_container_width=True):
+            res = api("POST", f"/quick/{doc_id}/run",
+                      json={"parser": chosen,
+                            "api_key": st.session_state.quick_api_key})
+            if res:
+                st.session_state.upload_stage = "quick_running"
+                st.rerun()
 
-        st.markdown("### Экспорт результатов")
-        c1, c2, c3 = st.columns(3)
-        for fmt, col, icon in [("markdown", c1, "📝"), ("json", c2, "🗂"), ("csv", c3, "📊")]:
-            with col:
-                if st.button(f"{icon} {fmt.upper()}", use_container_width=True):
-                    r = httpx.post(
-                        f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}",
-                        timeout=30,
-                    )
-                    if r.status_code == 200:
-                        st.success(f"✅ {r.json().get('message')}")
-                    else:
-                        st.error("❌ Ошибка экспорта")
+# ══════════════════════════════════════════════════════════════════════════════
+# ЭТАП 2б — быстрый режим: ожидание результата
+# ══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.upload_stage == "quick_running":
+    doc_id = st.session_state.upload_doc_id
+    st.info(f"⏳ Парсер **{st.session_state.quick_parser}** обрабатывает документ...")
 
-# ─── СПИСОК ДОКУМЕНТОВ ───────────────────────────────────────────────────────
-st.markdown("---")
-st.markdown("### 📁 Загруженные документы")
+    status = api("GET", f"/quick/{doc_id}/status") or {}
+    state  = status.get("status")
 
-try:
-    r = httpx.get(f"{BACKEND_URL}/documents/", timeout=5)
-    docs = r.json().get("documents", [])
-    if not docs:
-        st.caption("Нет загруженных документов")
+    if state == "done":
+        st.session_state.upload_stage = "quick_done"
+        st.rerun()
+    elif state == "error":
+        st.error(f"❌ Ошибка: {status.get('error')}")
+        if st.button("← Назад к выбору парсера"):
+            st.session_state.upload_stage = "quick_setup"
+            st.rerun()
     else:
-        current = st.session_state.get("current_doc_id")
-        if current:
-            st.success(f"✅ Выбран: `{st.session_state.get('current_doc_name', current)}`")
+        st.caption("Страница обновляется автоматически каждые 5 сек...")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Обновить статус", use_container_width=True):
+                st.rerun()
+        with col2:
+            if st.checkbox("Авто-обновление", value=True):
+                time.sleep(5)
+                st.rerun()
 
-        for doc in docs:
-            doc_id  = doc["doc_id"]
-            filename = doc.get("filename", doc_id)
-            status   = doc.get("status", "—")
-            is_current = (doc_id == current)
+# ══════════════════════════════════════════════════════════════════════════════
+# ЭТАП 3а — быстрый режим: результат готов
+# ══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.upload_stage == "quick_done":
+    doc_id = st.session_state.upload_doc_id
+    status = api("GET", f"/quick/{doc_id}/status") or {}
+    md     = status.get("markdown", "")
 
-            status_color = {
-                "ocr_done":    "🟢",
-                "layout_done": "🟡",
-                "uploaded":    "🔵",
-                "error":       "🔴",
-            }.get(status, "⚪")
+    st.success(f"✅ Готово! Парсер: **{st.session_state.quick_parser}**")
+    st.markdown("---")
 
-            col1, col2, col3 = st.columns([4, 1, 1])
-            with col1:
-                prefix = "▶ " if is_current else "   "
-                st.markdown(f"{prefix}📄 **{filename}**")
-                st.caption(f"`{doc_id}`")
-            with col2:
-                st.markdown(f"{status_color} `{status}`")
-            with col3:
-                if st.button(
-                    "✅ Выбран" if is_current else "Открыть",
-                    key=f"open_{doc_id}",
-                    use_container_width=True,
-                    disabled=is_current,
-                ):
-                    st.session_state.current_doc_id  = doc_id
-                    st.session_state.current_doc_name = filename
-                    st.rerun()
-except Exception as e:
-    st.warning(f"Не удалось загрузить список: {e}")
+    col_dl, col_copy, col_new = st.columns(3)
+    with col_dl:
+        st.download_button(
+            "⬇️ Скачать Markdown",
+            data=md.encode("utf-8"),
+            file_name=f"{st.session_state.upload_doc_name or doc_id}.md",
+            mime="text/markdown",
+            use_container_width=True,
+            type="primary",
+        )
+    with col_copy:
+        st.button("📋 Скопировать", use_container_width=True,
+                  on_click=lambda: st.write(
+                      f"<script>navigator.clipboard.writeText(`{md[:100]}`)</script>",
+                      unsafe_allow_html=True))
+    with col_new:
+        if st.button("📄 Новый документ", use_container_width=True):
+            for k in ["upload_doc_id", "upload_doc_name"]:
+                st.session_state[k] = None
+            st.session_state.upload_stage = "upload"
+            st.rerun()
+
+    st.markdown("### Результат")
+    tab_preview, tab_raw = st.tabs(["👁 Preview", "📝 Raw Markdown"])
+    with tab_preview:
+        st.markdown(md)
+    with tab_raw:
+        st.code(md, language="markdown")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ЭТАП 3б — детальный режим: layout detection запущен
+# ══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.upload_stage == "detail_layout":
+    doc_id = st.session_state.upload_doc_id
+    st.info("🔬 Детальный режим — запущен Layout Detection")
+
+    progress_bar = st.progress(0, text="Определяем блоки...")
+    for _ in range(120):
+        time.sleep(5)
+        s = api("GET", f"/processing/{doc_id}/status") or {}
+        status = s.get("status")
+        if status == "layout_done":
+            progress_bar.progress(1.0, text=f"✅ Найдено блоков: {s.get('total_blocks', 0)}")
+            st.success("✅ Разметка блоков готова! Переходи в **Viewer** для проверки.")
+            if st.button("→ Открыть Viewer", type="primary", use_container_width=True):
+                st.session_state["viewer_doc_id"] = doc_id
+                st.switch_page("pages/2_Viewer.py")
+            break
+        elif status == "error":
+            st.error(f"❌ Ошибка layout detection: {s.get('error', '')}")
+            break
+        else:
+            pct = min(0.9, (_ + 1) / 120)
+            progress_bar.progress(pct, text=f"Статус: {status}...")
+    else:
+        st.warning("⚠️ Layout detection занимает больше времени — проверь Viewer позже")
