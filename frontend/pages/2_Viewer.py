@@ -143,7 +143,7 @@ for k, v in _defaults.items():
 # ─── ЗАГОЛОВОК ────────────────────────────────────────────────────────────────
 st.title("🔍 Document Viewer")
 
-doc_id = st.session_state.get("current_doc_id")
+doc_id = st.session_state.get("viewer_doc_id") or st.session_state.get("viewer_doc_id")
 if not doc_id:
     st.info("👆 Выберите документ на странице **Upload**")
     st.stop()
@@ -175,7 +175,7 @@ with col_left:
             use_container_width=True,
             type="primary" if is_cur else "secondary",
         ):
-            st.session_state.current_doc_id        = did
+            st.session_state.viewer_doc_id        = did
             st.session_state.current_doc_name      = doc.get("filename", did)
             st.session_state.viewer_page           = 1
             st.session_state.viewer_selected_block = None
@@ -525,7 +525,7 @@ with col_right:
             f"{BACKEND_URL}/documents/{doc_id}/block-image/{selected_id}", timeout=10
         )
         if resp.status_code == 200:
-            st.image(resp.content, width="stretch")   # ← исправлен deprecated
+            st.image(resp.content, use_container_width=True)   # ← исправлен deprecated
     except Exception:
         pass
 
@@ -724,6 +724,39 @@ with col_right:
                     st.error(str(e))
 
     st.markdown("---")
+    st.markdown("---")
+    st.markdown("**🔁 OCR:**")
+    oc1, oc2 = st.columns(2)
+    with oc1:
+        if st.button("▶ Этот блок", use_container_width=True, key="btn_ocr_block",
+                     help="Запустить OCR только для выбранного блока"):
+            try:
+                resp = httpx.post(
+                    f"{BACKEND_URL}/processing/{doc_id}/ocr-block/{selected_id}",
+                    timeout=60,
+                )
+                if resp.status_code == 200:
+                    fetch_blocks.clear()
+                    st.success("✅ OCR готов")
+                    st.rerun()
+                else:
+                    st.error(f"{resp.status_code}: {resp.text[:60]}")
+            except Exception as e:
+                st.error(str(e))
+    with oc2:
+        if st.button("▶ Весь doc", use_container_width=True, key="btn_ocr_all",
+                     help="Запустить OCR для всего документа в фоне"):
+            try:
+                resp = httpx.post(
+                    f"{BACKEND_URL}/processing/{doc_id}/ocr", timeout=10
+                )
+                if resp.status_code == 200:
+                    st.success("⏳ OCR запущен в фоне")
+                else:
+                    st.error(f"{resp.status_code}")
+            except Exception as e:
+                st.error(str(e))
+
     st.markdown("**📤 Экспорт**")
     for fmt, icon in [("markdown", "📝"), ("json", "🗂"), ("csv", "📊")]:
         if st.button(f"{icon} {fmt.upper()}", key=f"exp2_{fmt}", use_container_width=True):
