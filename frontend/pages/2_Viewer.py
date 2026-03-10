@@ -619,14 +619,14 @@ with col_right:
             st.text_area(
                 "", value=output, height=120,
                 disabled=not st.session_state.viewer_edit_mode,
-                key="output_display",
+                key=f"output_display_{selected_id}",
             )
     else:
         st.caption("Нет OCR output")
 
     if st.session_state.viewer_edit_mode and btype not in ("table", "formula"):
         new_output = st.text_area(
-            "✏️ Редактировать:", value=output, height=120, key="edit_output"
+            "✏️ Редактировать:", value=output, height=120, key=f"edit_output_{selected_id}"
         )
         if st.button("💾 Сохранить текст", use_container_width=True,
                      type="primary", key="save_text"):
