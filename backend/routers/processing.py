@@ -196,6 +196,36 @@ def _run_ocr(doc_id: str):
         logger.error(f"OCR pipeline ошибка ({doc_id}): {e}", exc_info=True)
 
 
+
+@router.post("/{doc_id}/ocr-block/{block_id}", summary="OCR одного блока")
+async def ocr_single_block(doc_id: str, block_id: str):
+    """
+    Синхронный OCR для одного блока — результат сразу в ответе.
+    Используется из Viewer по кнопке "▶ Этот блок".
+    """
+    from main import models
+    from pipeline.ocr_pipeline import OCRPipeline
+
+    meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
+
+    pipeline = OCRPipeline(models=models, data_dir=DATA_DIR)
+    try:
+        block = pipeline.process_single_block(doc_id, block_id)
+        return {
+            "block_id":   block_id,
+            "status":     block.get("status"),
+            "block_type": block.get("block_type"),
+            "output":     block.get("output", ""),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"OCR блока {block_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/{doc_id}/ocr", summary="Запустить OCR всех блоков")
 async def start_ocr(doc_id: str, background_tasks: BackgroundTasks):
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"

@@ -76,6 +76,41 @@ class OCRPipeline:
         return self._fallback
 
     # ── Основной метод ────────────────────────────────────────────────
+
+    def process_single_block(self, doc_id: str, block_id: str) -> dict:
+        """
+        OCR для одного блока по block_id.
+        Читает blocks.json, обновляет нужный блок, сохраняет обратно.
+        Возвращает обновлённый блок.
+        """
+        blocks_file = self.data_dir / "results" / doc_id / "blocks.json"
+        if not blocks_file.exists():
+            raise FileNotFoundError(f"blocks.json не найден: {blocks_file}")
+
+        blocks = json.loads(blocks_file.read_text())
+        block  = next((b for b in blocks if b.get("block_id") == block_id), None)
+        if block is None:
+            raise ValueError(f"Блок {block_id} не найден")
+
+        image_path = block.get("image_path", "")
+        if not image_path or not Path(image_path).exists():
+            block["output"] = "[error: image not found]"
+            block["status"] = "error"
+            blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
+            return block
+
+        image  = Image.open(image_path).convert("RGB")
+        output = self._process_block(image, block["block_type"])
+
+        block["output"] = output
+        if not block.get("original_output"):
+            block["original_output"] = output
+        block["status"] = "ocr_done"
+
+        blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
+        logger.info(f"✅ OCR блока {block_id}: {len(output)} символов")
+        return block
+
     def process_document(self, doc_id: str) -> dict:
         """
         Запускает OCR для всех блоков документа.
