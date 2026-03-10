@@ -72,6 +72,19 @@ async def upload_document(
 
     logger.info(f"Загружен {file.filename} ({size_mb:.1f} МБ) → doc_id={doc_id}")
 
+    # ── Сразу пишем meta.json со статусом splitting ──────────────────────
+    # Это нужно чтобы /processing/{doc_id}/status не возвращал 404
+    # пока PDF конвертируется в PNG (может занять 30-60 сек)
+    meta_path = upload_dir / "meta.json"
+    meta_path.write_text(json.dumps({
+        "doc_id":     doc_id,
+        "filename":   file.filename,
+        "size_mb":    round(size_mb, 2),
+        "status":     "splitting",
+        "page_count": 0,
+        "pages":      [],
+    }, ensure_ascii=False, indent=2))
+
     # Запускаем разбивку в фоне — не блокируем HTTP-ответ
     background_tasks.add_task(_run_splitting, pdf_path, doc_id)
 

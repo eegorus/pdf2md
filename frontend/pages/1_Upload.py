@@ -29,6 +29,77 @@ for k, v in {
         st.session_state[k] = v
 
 # ── Title ─────────────────────────────────────────────────────────────────────
+
+# ── Сайдбар: история загруженных документов ───────────────────────────────
+with st.sidebar:
+    # Кнопка "Загрузить новый" всегда сверху
+    if st.button("＋ Загрузить новый PDF", type="primary", use_container_width=True):
+        st.session_state.upload_doc_id   = None
+        st.session_state.upload_doc_name = None
+        st.session_state.upload_stage    = "upload"
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown("**Загруженные документы**")
+
+    docs_resp = api("GET", "/documents/")
+    docs = (docs_resp or {}).get("documents", [])
+
+    if not docs:
+        st.caption("Нет документов")
+    else:
+        status_icon = {
+            "splitting":   "⏳",
+            "split_done":  "✂️",
+            "processing":  "🔄",
+            "layout_done": "✅",
+            "ocr_done":    "🎉",
+            "error":       "❌",
+        }
+        status_to_stage = {
+            "splitting":   "upload",
+            "split_done":  "mode",
+            "processing":  "detail_layout",
+            "layout_done": "detail_layout",
+            "error":       "mode",
+        }
+
+        for d in reversed(docs):
+            icon  = status_icon.get(d.get("status", ""), "❓")
+            fname = d.get("filename", d["doc_id"])
+            # Обрезаем имя файла и убираем расширение для компактности
+            short = fname.replace(".pdf", "").replace("_", " ")[:22]
+            pages = f"{d['page_count']}стр" if d.get("page_count") else ""
+
+            # Текущий документ — выделяем
+            is_active = (d["doc_id"] == st.session_state.get("upload_doc_id"))
+            btn_label = f"{icon} {short}"
+            if pages:
+                btn_label += f" · {pages}"
+
+            if st.button(
+                btn_label,
+                key=f"sb_{d['doc_id']}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                st.session_state.upload_doc_id   = d["doc_id"]
+                st.session_state.upload_doc_name = fname
+                st.session_state.upload_stage    = status_to_stage.get(
+                    d.get("status", ""), "mode"
+                )
+                st.rerun()
+
+    if docs:
+        st.markdown("---")
+        if st.button("🗑 Удалить все", use_container_width=True):
+            for d in docs:
+                api("DELETE", f"/documents/{d['doc_id']}")
+            st.session_state.upload_doc_id   = None
+            st.session_state.upload_doc_name = None
+            st.session_state.upload_stage    = "upload"
+            st.rerun()
+
 st.title("📤 Загрузка PDF")
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -45,3 +45,10 @@ pydantic>=2.7
 aiofiles>=23.2
 requests>=2.32
 tqdm>=4.66
+
+# ── Quick Parsers (Быстрый режим) ─────────────────────────────────────
+marker-pdf>=1.6
+docling>=2.15
+llama-parse>=0.6
+openai>=1.30
+anthropic>=0.40
