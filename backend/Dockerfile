@@ -36,6 +36,7 @@ RUN pip uninstall -y texteller 2>/dev/null || true \
 # ── Quick Parsers (Быстрый режим) ─────────────────────────────────────
 RUN pip install --no-cache-dir \
     marker-pdf \
+    "unstructured[pdf]" \
     docling \
     llama-parse \
     anthropic
@@ -47,6 +48,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 # EasyOCR хранит модели здесь — маппируем на volume для переиспользования
 ENV EASYOCR_MODULE_PATH=/root/.EasyOCR
+
+# Восстанавливаем нужные версии после unstructured
+RUN pip install --no-cache-dir "transformers==4.51.3"
 
 # ── Копируем код ──────────────────────────────────────────────────────
 COPY . .
