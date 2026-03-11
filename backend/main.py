@@ -318,7 +318,7 @@ async def health_ollama():
 # ═══════════════════════════════════════════════════════════════════════
 # РОУТЕРЫ (skeleton — логика добавляется на шагах 7–9)
 # ═══════════════════════════════════════════════════════════════════════
-from routers import documents, processing, training, quick   # noqa: E402
+from routers import documents, processing, training, quick, settings  # noqa: E402
 
 app.include_router(
     documents.router,
@@ -336,3 +336,4 @@ app.include_router(
     prefix="/training",
     tags=["Training"],
 )
+app.include_router(settings.router, prefix="/settings", tags=["settings"])
