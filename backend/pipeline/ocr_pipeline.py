@@ -226,7 +226,7 @@ class OCRPipeline:
                 self._reload_table_model()
                 return result
 
-            elif block_type == "table":
+            elif block_type in ("table", "table_simple", "table_complex"):
                 if self.table_rec:
                     try:
                         result = self.table_rec.recognize(image)
@@ -243,7 +243,6 @@ class OCRPipeline:
                         except Exception as retry_e:
                             logger.error(f"Retry таблицы не помог: {retry_e}")
                             return "[table: requires manual review]"
-                # dots.ocr недоступен
                 logger.warning("dots.ocr недоступен - таблица помечена для ревью")
                 return "[table: requires manual review]"
 

@@ -18,11 +18,13 @@ st.set_page_config(
 BLOCK_COLORS = {
     "text":    (59,  130, 246),
     "table":   (234, 88,  12),
+    "table_simple":  (234, 179, 8),
+    "table_complex": (234, 88,  12),
     "formula": (22,  163, 74),
     "figure":  (147, 51,  234),
 }
 TYPE_HEX = {
-    "text": "#3b82f6", "table": "#ea580c",
+    "text": "#3b82f6", "table": "#ea580c", "table_simple": "#eab308", "table_complex": "#ea580c",
     "formula": "#16a34a", "figure": "#9333ea",
 }
 
@@ -189,7 +191,9 @@ with col_left:
     st.markdown("### 🎨 Фильтры")
     show_types = set()
     if st.checkbox("📝 Text",    value=True): show_types.add("text")
-    if st.checkbox("📊 Table",   value=True): show_types.add("table")
+    if st.checkbox("📊 Table",        value=True): show_types.add("table")
+    if st.checkbox("📊 Таблица простая", value=True): show_types.add("table_simple")
+    if st.checkbox("📊 Таблица сложная", value=True): show_types.add("table_complex")
     if st.checkbox("➗ Formula", value=True): show_types.add("formula")
     if st.checkbox("🖼 Figure",  value=True): show_types.add("figure")
 
@@ -202,7 +206,7 @@ with col_left:
     st.metric("Страниц", total_pages)
     st.metric("Всего блоков", len(all_blocks))
     for btype, cnt in sorted(type_counts.items()):
-        emoji = {"text": "🔵", "table": "🟠", "formula": "🟢", "figure": "🟣"}.get(btype, "⚪")
+        emoji = {"text": "🔵", "table": "🟠", "table_simple": "🟡", "table_complex": "🟠", "formula": "🟢", "figure": "🟣"}.get(btype, "⚪")
         st.caption(f"{emoji} {btype}: {cnt}")
     nr = sum(1 for b in all_blocks if b.get("status") == "needs_review")
     if nr:
@@ -270,8 +274,8 @@ with col_main:
 
     if st.session_state.viewer_draw_mode:
         with tc2:
-            type_opts = ["text", "table", "formula", "figure"]
-            icons = {"text": "📝", "table": "📊", "formula": "➗", "figure": "🖼"}
+            type_opts = ["text", "table_simple", "table_complex", "formula", "figure"]
+            icons = {"text": "📝", "table": "📊", "table_simple": "📊", "table_complex": "📊", "formula": "➗", "figure": "🖼"}
             prev_type = st.session_state.viewer_draw_type
             new_type = st.selectbox(
                 "тип",
@@ -446,7 +450,7 @@ with col_main:
                 is_sel  = bid == st.session_state.viewer_selected_block
                 s_icon  = {"needs_review": "🔴", "accepted": "✅",
                            "ocr_done": "🔵", "error": "❌"}.get(bstatus, "⚪")
-                t_icon  = {"text": "📝", "table": "📊",
+                t_icon  = {"text": "📝", "table": "📊", "table_simple": "📊", "table_complex": "📊",
                            "formula": "➗", "figure": "🖼"}.get(btype, "?")
                 with col:
                     if st.button(
@@ -511,7 +515,7 @@ with col_right:
     output  = block.get("output") or ""
     bbox    = block.get("bbox", [0, 0, 0, 0])
 
-    type_icon   = {"text": "📝", "table": "📊", "formula": "➗", "figure": "🖼"}.get(btype, "?")
+    type_icon   = {"text": "📝", "table": "📊", "table_simple": "📊", "table_complex": "📊", "formula": "➗", "figure": "🖼"}.get(btype, "?")
     status_icon = {"needs_review": "🔴", "accepted": "🟢",
                    "ocr_done": "🔵", "error": "❌"}.get(bstatus, "⚪")
 
@@ -531,7 +535,7 @@ with col_right:
 
     # ── Геометрия и тип ───────────────────────────────────────────────────
     with st.expander("✏️ Геометрия и тип", expanded=False):
-        type_list = ["text", "table", "formula", "figure"]
+        type_list = ["text", "table", "table_simple", "table_complex", "formula", "figure"]
         edit_btype = st.selectbox(
             "Тип",
             type_list,
@@ -596,7 +600,7 @@ with col_right:
     # ── OCR Output ────────────────────────────────────────────────────────
     if output:
         st.markdown("**OCR Output:**")
-        if btype == "table":
+        if btype in ("table", "table_simple", "table_complex"):
             components.html(
                 f"<html><head><style>"
                 f"body{{background:#1e1e1e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;"
@@ -624,7 +628,7 @@ with col_right:
     else:
         st.caption("Нет OCR output")
 
-    if st.session_state.viewer_edit_mode and btype not in ("table", "formula"):
+    if st.session_state.viewer_edit_mode and btype not in ("table", "table_simple", "table_complex", "formula"):
         new_output = st.text_area(
             "✏️ Редактировать:", value=output, height=120, key=f"edit_output_{selected_id}"
         )
