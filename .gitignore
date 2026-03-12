@@ -56,3 +56,4 @@ logs/
 # === JUPYTER ===
 .ipynb_checkpoints/
 *.ipynb
+data/
