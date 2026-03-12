@@ -77,7 +77,7 @@ class OCRPipeline:
 
     # ── Основной метод ────────────────────────────────────────────────
 
-    def process_single_block(self, doc_id: str, block_id: str) -> dict:
+    def process_single_block(self, doc_id: str, block_id: str, model_id: str | None = None) -> dict:
         """
         OCR для одного блока по block_id.
         Читает blocks.json, обновляет нужный блок, сохраняет обратно.
@@ -100,7 +100,7 @@ class OCRPipeline:
             return block
 
         image  = Image.open(image_path).convert("RGB")
-        output = self._process_block(image, block["block_type"])
+        output = self._process_block(image, block["block_type"], model_id=model_id)
 
         block["output"] = output
         if not block.get("original_output"):
@@ -111,7 +111,7 @@ class OCRPipeline:
         logger.info(f"✅ OCR блока {block_id}: {len(output)} символов")
         return block
 
-    def process_document(self, doc_id: str) -> dict:
+    def process_document(self, doc_id: str, model_choices: dict | None = None) -> dict:
         """
         Запускает OCR для всех блоков документа.
 
@@ -150,7 +150,8 @@ class OCRPipeline:
 
             try:
                 image  = Image.open(image_path).convert("RGB")
-                output = self._process_block(image, block_type)
+                model_id = (model_choices or {}).get(block_type)
+                output = self._process_block(image, block_type, model_id=model_id)
 
                 block["output"] = output
                 # Сохраняем оригинал один раз — original_output нужен для training pairs
@@ -211,13 +212,17 @@ class OCRPipeline:
             self.models.table_model.to("cuda")
             logger.debug("dots.ocr возвращён на GPU")
 
-    def _process_block(self, image: Image.Image, block_type: str) -> str:
+    def _process_block(self, image: Image.Image, block_type: str, model_id: str | None = None) -> str:
         """
         Выбирает модуль и запускает OCR для одного блока.
         Figure/fallback → выгружаем dots.ocr перед Ollama вызовом.
         """
         import torch
         try:
+            # Если явно указана облачная модель — роутим туда
+            if model_id in ("gpt4o", "claude", "openrouter"):
+                return self._process_cloud(image, block_type, model_id)
+
             if block_type == "text":
                 if self.text_ocr:
                     return self.text_ocr.recognize(image)
@@ -275,3 +280,95 @@ class OCRPipeline:
             result = self.fallback.process(image, block_type)
             self._reload_table_model()
             return result
+
+    def _process_cloud(self, image: "Image.Image", block_type: str, model_id: str) -> str:
+        """Отправляет блок в облачную модель через settings API-ключи."""
+        import base64, io, httpx, json
+
+        settings_file = self.data_dir / "settings.json"
+        keys = {}
+        if settings_file.exists():
+            keys = json.loads(settings_file.read_text()).get("keys", {})
+
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
+
+        type_prompts = {
+            "text":          "Extract all text from this image. Return plain text only.",
+            "figure":        "Describe this image/figure in detail for a technical document.",
+            "table_simple":  "Convert this table to Markdown table format.",
+            "table_complex": "Convert this complex table to HTML format preserving all merged cells.",
+            "table":         "Convert this table to HTML format.",
+            "formula":       "Convert this mathematical formula to LaTeX. Return only the LaTeX code.",
+        }
+        prompt = type_prompts.get(block_type, "Extract content from this image.")
+
+        if model_id == "openrouter":
+            api_key = keys.get("openrouter", "")
+            if not api_key:
+                raise ValueError("OpenRouter API key не задан — добавь в Settings")
+            r = httpx.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "HTTP-Referer":  "https://prms-local",
+                    "X-Title":       "PRMS Table Extractor",
+                },
+                json={
+                    "model": "openai/gpt-4o",
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text",      "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    ]}],
+                    "max_tokens": 2048,
+                },
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+
+        elif model_id == "gpt4o":
+            api_key = keys.get("openai", "")
+            if not api_key:
+                raise ValueError("OpenAI API key не задан")
+            r = httpx.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "gpt-4o",
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text",      "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    ]}],
+                    "max_tokens": 2048,
+                },
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+
+        elif model_id == "claude":
+            api_key = keys.get("anthropic", "")
+            if not api_key:
+                raise ValueError("Anthropic API key не задан")
+            r = httpx.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key":         api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                json={
+                    "model":      "claude-3-5-sonnet-20241022",
+                    "max_tokens": 2048,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
+                        {"type": "text",  "text": prompt},
+                    ]}],
+                },
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()["content"][0]["text"]
+
+        raise ValueError(f"Неизвестная облачная модель: {model_id}")

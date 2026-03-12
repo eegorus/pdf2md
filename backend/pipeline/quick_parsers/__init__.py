@@ -1,8 +1,9 @@
-from .marker_parser  import MarkerParser
-from .docling_parser import DoclingParser
-from .pymupdf_parser import PyMuPDFParser
+from .marker_parser       import MarkerParser
+from .docling_parser      import DoclingParser
+from .pymupdf_parser      import PyMuPDFParser
 from .unstructured_parser import UnstructuredParser
-from .cloud_parser   import LlamaParseParser, GPT4oParser, ClaudeParser
+from .cloud_parser        import LlamaParseParser, GPT4oParser, ClaudeParser
+from .openrouter_parser   import OpenRouterParser
 
 ALL_PARSERS = [
     PyMuPDFParser(),
@@ -12,6 +13,7 @@ ALL_PARSERS = [
     LlamaParseParser(),
     GPT4oParser(),
     ClaudeParser(),
+    OpenRouterParser(),
 ]
 
 def get_parser(name: str):

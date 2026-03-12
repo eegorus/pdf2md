@@ -227,7 +227,8 @@ async def ocr_single_block(doc_id: str, block_id: str):
 
 
 @router.post("/{doc_id}/ocr", summary="Запустить OCR всех блоков")
-async def start_ocr(doc_id: str, background_tasks: BackgroundTasks):
+async def start_ocr(doc_id: str, background_tasks: BackgroundTasks,
+                    payload: dict = Body(default={})):
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
     if not meta_file.exists():
         raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
