@@ -135,6 +135,7 @@ if parsers:
             "gpt4o":      "openai",
             "claude":     "anthropic",
             "llamaparse": "llamaparse",
+            "openrouter": "openrouter",
         }
         key_set = True
         if needs_key:

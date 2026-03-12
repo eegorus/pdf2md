@@ -850,8 +850,11 @@ with col_right:
         if st.button("▶ Этот блок", use_container_width=True, key="btn_ocr_block",
                      help="Запустить OCR только для выбранного блока"):
             try:
+                _btype    = next((b.get("block_type") for b in all_blocks if b.get("id") == selected_id), None)
+                _model_id = st.session_state.get("viewer_model_choices", {}).get(_btype)
                 resp = httpx.post(
                     f"{BACKEND_URL}/processing/{doc_id}/ocr-block/{selected_id}",
+                    json={"model_id": _model_id} if _model_id else {},
                     timeout=60,
                 )
                 if resp.status_code == 200:
@@ -866,8 +869,11 @@ with col_right:
         if st.button("▶ Весь doc", use_container_width=True, key="btn_ocr_all",
                      help="Запустить OCR для всего документа в фоне"):
             try:
+                _choices = st.session_state.get("viewer_model_choices", {})
                 resp = httpx.post(
-                    f"{BACKEND_URL}/processing/{doc_id}/ocr", timeout=10
+                    f"{BACKEND_URL}/processing/{doc_id}/ocr",
+                    json={"model_choices": _choices},
+                    timeout=10,
                 )
                 if resp.status_code == 200:
                     st.success("⏳ OCR запущен в фоне")
