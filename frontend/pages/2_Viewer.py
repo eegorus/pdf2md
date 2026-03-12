@@ -128,6 +128,8 @@ _defaults = {
     "viewer_selected_block": None,
     "viewer_edit_mode": False,
     "viewer_confirm_delete": False,
+    "viewer_model_dialog_open": False,
+    "viewer_model_choices": {},      # {block_type: model_id}
     # Режим рисования
     "viewer_draw_mode": False,
     "viewer_draw_type": "text",
@@ -158,6 +160,105 @@ try:
     total_pages = r.json().get("page_count", 1)
 except Exception:
     total_pages = 1
+
+
+# ─── МОДАЛЬНОЕ ОКНО ВЫБОРА МОДЕЛЕЙ ────────────────────────────────────────────
+@st.dialog("🎯 Выбор моделей для распознавания", width="large")
+def model_selection_dialog(doc_id: str, all_blocks: list):
+    """Пользователь назначает модель для каждого типа блоков → запускает OCR."""
+    import httpx as _httpx
+
+    # Загружаем доступные модели с backend
+    try:
+        r = _httpx.get(f"{BACKEND_URL}/settings/available-models", timeout=5)
+        avail = r.json()
+    except Exception as e:
+        st.error(f"Не удалось загрузить список моделей: {e}")
+        return
+
+    # Определяем какие типы блоков реально присутствуют в документе
+    present_types = sorted(set(
+        b.get("block_type") for b in all_blocks
+        if b.get("block_type") in avail
+    ))
+
+    if not present_types:
+        st.warning("В документе нет размеченных блоков")
+        return
+
+    BLOCK_LABELS = {
+        "text":          "📝 Текст",
+        "figure":        "🖼 Картинка",
+        "table_simple":  "📊 Таблица простая",
+        "table_complex": "📊 Таблица сложная",
+        "formula":       "➗ Формула",
+        "table":         "📊 Таблица",
+    }
+
+    st.markdown("Назначьте модель для каждого типа блоков в документе:")
+    st.markdown("---")
+
+    choices = {}
+    for btype in present_types:
+        info    = avail[btype]
+        models  = info["models"]
+        default = st.session_state.viewer_model_choices.get(btype, info["default"])
+
+        col_type, col_sel = st.columns([1, 2])
+        with col_type:
+            cnt = sum(1 for b in all_blocks if b.get("block_type") == btype)
+            st.markdown(f"**{BLOCK_LABELS.get(btype, btype)}**")
+            st.caption(f"{cnt} блоков")
+        with col_sel:
+            opts       = [m["id"]    for m in models]
+            opt_labels = []
+            for m in models:
+                avail_icon = "✅" if m["available"] else "○"
+                reason     = f" — {m['reason']}" if m.get("reason") else ""
+                opt_labels.append(f"{avail_icon} {m['label']}{reason}")
+
+            default_idx = opts.index(default) if default in opts else 0
+            chosen = st.selectbox(
+                f"Модель для {btype}",
+                options=opts,
+                index=default_idx,
+                format_func=lambda x, _opts=opts, _labels=opt_labels: _labels[_opts.index(x)],
+                key=f"modal_model_{btype}",
+                label_visibility="collapsed",
+            )
+            choices[btype] = chosen
+
+            # Предупреждение если выбранная модель недоступна
+            chosen_meta = next((m for m in models if m["id"] == chosen), None)
+            if chosen_meta and not chosen_meta["available"]:
+                st.warning(f"⚠️ {chosen_meta['reason']}", icon=None)
+
+        st.markdown("")
+
+    st.markdown("---")
+    run_col, cancel_col = st.columns([2, 1])
+    with run_col:
+        if st.button("▶ Запустить распознавание", type="primary",
+                     use_container_width=True, key="modal_run"):
+            st.session_state.viewer_model_choices = choices
+            # Запускаем OCR с выбранными моделями
+            try:
+                resp = _httpx.post(
+                    f"{BACKEND_URL}/processing/{doc_id}/ocr",
+                    json={"model_choices": choices},
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    st.success("⏳ OCR запущен в фоне. Следи за статусом на странице.")
+                    st.rerun()
+                else:
+                    st.error(f"Ошибка {resp.status_code}: {resp.text[:100]}")
+            except Exception as e:
+                st.error(str(e))
+    with cancel_col:
+        if st.button("Отмена", use_container_width=True, key="modal_cancel"):
+            st.rerun()
+
 
 col_left, col_main, col_right = st.columns([0.65, 3.0, 1.35])
 
@@ -211,6 +312,20 @@ with col_left:
     nr = sum(1 for b in all_blocks if b.get("status") == "needs_review")
     if nr:
         st.markdown(f"🔴 **needs_review: {nr}**")
+
+    # ── Кнопка запуска финального OCR ─────────────────────────────────────
+    st.markdown("---")
+    total_blocks_count  = len(all_blocks)
+    marked_blocks_count = sum(1 for b in all_blocks if b.get("block_type"))
+    if total_blocks_count > 0:
+        st.markdown("**🎯 Распознавание**")
+        st.caption(f"Размечено блоков: {marked_blocks_count}")
+        if st.button("✅ Выбрать модели и запустить",
+                     use_container_width=True, type="primary",
+                     key="btn_open_model_dialog"):
+            model_selection_dialog(doc_id, all_blocks)
+
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN — навигация + изображение + список блоков
