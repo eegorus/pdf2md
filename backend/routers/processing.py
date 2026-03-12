@@ -198,10 +198,12 @@ def _run_ocr(doc_id: str):
 
 
 @router.post("/{doc_id}/ocr-block/{block_id}", summary="OCR одного блока")
-async def ocr_single_block(doc_id: str, block_id: str):
+async def ocr_single_block(doc_id: str, block_id: str,
+                            payload: dict = Body(default={})):
     """
     Синхронный OCR для одного блока — результат сразу в ответе.
     Используется из Viewer по кнопке "▶ Этот блок".
+    payload.model_id — опционально: "gpt4o" | "claude" | "openrouter" | None (local)
     """
     from main import models
     from pipeline.ocr_pipeline import OCRPipeline
@@ -210,9 +212,10 @@ async def ocr_single_block(doc_id: str, block_id: str):
     if not meta_file.exists():
         raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
 
+    model_id = payload.get("model_id")
     pipeline = OCRPipeline(models=models, data_dir=DATA_DIR)
     try:
-        block = pipeline.process_single_block(doc_id, block_id)
+        block = pipeline.process_single_block(doc_id, block_id, model_id=model_id)
         return {
             "block_id":   block_id,
             "status":     block.get("status"),
