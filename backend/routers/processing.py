@@ -317,6 +317,36 @@ async def export_results(doc_id: str, format: str = "markdown"):
     }
 
 
+@router.get("/{doc_id}/export-file/{fmt}", summary="Скачать файл экспорта")
+async def download_export(doc_id: str, fmt: str):
+    """
+    Отдаёт файл экспорта для скачивания браузером.
+    Сначала вызови POST /{doc_id}/export?format=..., затем GET этот endpoint.
+    """
+    from fastapi.responses import FileResponse
+
+    ext_map  = {"markdown": "md",   "json": "json", "csv": "csv"}
+    mime_map = {"markdown": "text/markdown", "json": "application/json", "csv": "text/csv"}
+
+    if fmt not in ext_map:
+        raise HTTPException(status_code=400, detail=f"Формат не поддерживается: {fmt}")
+
+    out_path = DATA_DIR / "results" / doc_id / f"export.{ext_map[fmt]}"
+    if not out_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Файл не найден — сначала POST /{doc_id}/export?format={fmt}",
+        )
+
+    filename = f"{doc_id[:8]}_{fmt}.{ext_map[fmt]}"
+    return FileResponse(
+        path=str(out_path),
+        media_type=mime_map[fmt],
+        filename=filename,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ─── PATCH: обновить статус/output конкретного блока ───────────────────────
 @router.patch("/{doc_id}/blocks/{block_id}")
 async def patch_block(doc_id: str, block_id: str, payload: dict = Body(...)):
@@ -387,6 +417,35 @@ async def add_block(doc_id: str, payload: dict = Body(...)):
         "status":     "detected",
         "output":     None,
     }
+    # ── Вырезаем кроп из страницы сразу при создании блока ──────────────────
+    try:
+        from PIL import Image as PILImage
+        # Поддерживаем оба формата: page001.png и page_001.png
+        page_png = DATA_DIR / "pages" / doc_id / f"page_{page_num:03d}.png"
+        if not page_png.exists():
+            page_png = DATA_DIR / "pages" / doc_id / f"page{page_num:03d}.png"
+        if page_png.exists() and len(bbox) == 4:
+            page_img = PILImage.open(str(page_png)).convert("RGB")
+            pw, ph   = page_img.size          # размер PNG страницы
+            x1, y1, x2, y2 = bbox             # координаты в пикселях страницы
+            # Клампируем чтобы не выйти за границы
+            x1 = max(0, min(int(x1), pw - 1))
+            y1 = max(0, min(int(y1), ph - 1))
+            x2 = max(x1 + 1, min(int(x2), pw))
+            y2 = max(y1 + 1, min(int(y2), ph))
+            crop = page_img.crop((x1, y1, x2, y2))
+            crops_dir = DATA_DIR / "results" / doc_id / "blocks"
+            crops_dir.mkdir(parents=True, exist_ok=True)
+            crop_path = crops_dir / f"{block_id}.png"
+            crop.save(str(crop_path))
+            new_block["image_path"] = str(crop_path)
+            new_block["status"]     = "detected"
+            logger.info(f"Кроп создан: {crop_path} ({x2-x1}x{y2-y1}px)")
+        else:
+            logger.warning(f"Страница {page_png} не найдена — image_path будет пустым")
+    except Exception as e:
+        logger.error(f"Ошибка создания кропа для {block_id}: {e}")
+
     blocks.append(new_block)
     blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
@@ -394,5 +453,5 @@ async def add_block(doc_id: str, payload: dict = Body(...)):
         meta = json.loads(meta_file.read_text())
         meta["total_blocks"] = len(blocks)
         meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
-    return {"block_id": block_id, "created": True}
+    return {"block_id": block_id, "created": True, "image_path": new_block.get("image_path")}
 

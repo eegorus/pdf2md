@@ -606,17 +606,38 @@ with col_right:
         st.markdown("---")
         st.markdown("**📤 Экспорт**")
         for fmt, icon in [("markdown", "📝"), ("json", "🗂"), ("csv", "📊")]:
-            if st.button(f"{icon} {fmt.upper()}", key=f"exp_{fmt}", use_container_width=True):
+            col_gen, col_dl = st.columns(2)
+            with col_gen:
+                if st.button(f"{icon} {fmt.upper()}", key=f"exp_{fmt}", use_container_width=True):
+                    try:
+                        resp = httpx.post(
+                            f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}", timeout=30
+                        )
+                        if resp.status_code == 200:
+                            st.success("✅ Готов")
+                        else:
+                            st.error("Ошибка")
+                    except Exception as e:
+                        st.error(str(e))
+            with col_dl:
                 try:
-                    resp = httpx.post(
-                        f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}", timeout=30
+                    dl = httpx.get(
+                        f"{BACKEND_URL}/processing/{doc_id}/export-file/{fmt}", timeout=10
                     )
-                    if resp.status_code == 200:
-                        st.success(resp.json().get("message", "Готово"))
+                    if dl.status_code == 200:
+                        ext = {"markdown": "md", "json": "json", "csv": "csv"}[fmt]
+                        st.download_button(
+                            f"⬇ {fmt.upper()}",
+                            data=dl.content,
+                            file_name=f"{doc_id[:8]}_{fmt}.{ext}",
+                            mime=dl.headers.get("content-type", "text/plain"),
+                            key=f"dl_{fmt}",
+                            use_container_width=True,
+                        )
                     else:
-                        st.error("Ошибка экспорта")
-                except Exception as e:
-                    st.error(str(e))
+                        st.caption("сначала сгенерируй →")
+                except Exception:
+                    st.caption("—")
         st.stop()
 
     block = next((b for b in all_blocks if b["block_id"] == selected_id), None)
@@ -884,12 +905,35 @@ with col_right:
 
     st.markdown("**📤 Экспорт**")
     for fmt, icon in [("markdown", "📝"), ("json", "🗂"), ("csv", "📊")]:
-        if st.button(f"{icon} {fmt.upper()}", key=f"exp2_{fmt}", use_container_width=True):
+        col_gen, col_dl = st.columns(2)
+        with col_gen:
+            if st.button(f"{icon} {fmt.upper()}", key=f"exp2_{fmt}", use_container_width=True):
+                try:
+                    resp = httpx.post(
+                        f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}", timeout=30
+                    )
+                    if resp.status_code == 200:
+                        st.success("✅ Готов")
+                    else:
+                        st.error("Ошибка")
+                except Exception as e:
+                    st.error(str(e))
+        with col_dl:
             try:
-                resp = httpx.post(
-                    f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}", timeout=30
+                dl = httpx.get(
+                    f"{BACKEND_URL}/processing/{doc_id}/export-file/{fmt}", timeout=10
                 )
-                if resp.status_code == 200:
-                    st.success(resp.json().get("message", "Готово"))
-            except Exception as e:
-                st.error(str(e))
+                if dl.status_code == 200:
+                    ext = {"markdown": "md", "json": "json", "csv": "csv"}[fmt]
+                    st.download_button(
+                        f"⬇ {fmt.upper()}",
+                        data=dl.content,
+                        file_name=f"{doc_id[:8]}_{fmt}.{ext}",
+                        mime=dl.headers.get("content-type", "text/plain"),
+                        key=f"dl2_{fmt}",
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption("сначала сгенерируй →")
+            except Exception:
+                st.caption("—")
