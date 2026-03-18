@@ -117,7 +117,7 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
         if block_type == "text":
             lines.append(output + "\n")
 
-        elif block_type == "table":
+        elif block_type in {"table", "table_simple", "table_complex"}:
             # HTML таблица в markdown
             lines.append("\n" + output + "\n")
 

@@ -34,6 +34,45 @@ DOTS_SYSTEM_PROMPT = (
 DOTS_USER_PROMPT = "Convert this table to HTML."
 
 
+
+def _plain_to_markdown(text: str) -> str:
+    """
+    Если модель вернула plain text без HTML — пробуем собрать Markdown-таблицу.
+    Логика: строки разбиваем по двум и более пробелам или табуляции.
+    Если не получается — возвращаем как есть.
+    """
+    import re
+    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    if len(lines) < 2:
+        return text.strip()
+
+    rows = []
+    for line in lines:
+        # Разбиваем по 2+ пробелам или таб
+        cols = re.split(r"\t|  +", line)
+        cols = [c.strip() for c in cols if c.strip()]
+        if cols:
+            rows.append(cols)
+
+    if not rows:
+        return text.strip()
+
+    # Нормализуем кол-во столбцов
+    max_cols = max(len(r) for r in rows)
+    for r in rows:
+        while len(r) < max_cols:
+            r.append("")
+
+    # Собираем Markdown таблицу
+    md_lines = []
+    header = rows[0]
+    md_lines.append("| " + " | ".join(header) + " |")
+    md_lines.append("| " + " | ".join(["---"] * max_cols) + " |")
+    for row in rows[1:]:
+        md_lines.append("| " + " | ".join(row) + " |")
+
+    return "\n".join(md_lines)
+
 class TableRecognizer:
     def __init__(self, model, processor):
         """
@@ -147,4 +186,5 @@ class TableRecognizer:
         if table_match:
             return table_match.group(1).strip()
 
-        return raw.strip()
+        # Нет <table> тега — пробуем конвертировать plain text в Markdown
+        return _plain_to_markdown(raw)

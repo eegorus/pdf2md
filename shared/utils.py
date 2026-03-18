@@ -1,88 +1,133 @@
-import uuid
+"""
+shared/utils.py — общие утилиты для всего backend
+
+Используется в роутерах и pipeline модулях.
+"""
 import hashlib
+import time
+import logging
 from pathlib import Path
-from datetime import datetime
+
+logger = logging.getLogger("prms.utils")
 
 
 def generate_doc_id(filename: str) -> str:
     """
-    Генерируем уникальный ID документа на основе имени файла + timestamp.
-    Используем короткий hash чтобы ID был читаемым но уникальным.
+    Генерирует уникальный ID документа на основе имени файла + timestamp.
+
+    Используем первые 12 символов SHA256 — достаточно для уникальности
+    при разумном количестве документов (коллизия крайне маловероятна).
+
+    Пример: "report_2022.pdf" + 1708123456.789 → "a3f9b2c1d4e5"
     """
-    timestamp = datetime.utcnow().isoformat()
-    raw = f"{filename}_{timestamp}_{uuid.uuid4()}"
-    return hashlib.md5(raw.encode()).hexdigest()[:12]
-
-
-def generate_block_id(doc_id: str, page_num: int, block_type: str, idx: int) -> str:
-    """
-    Формат: {doc_id}_p{page:03d}_{type}_{idx:03d}
-    Пример: a3f9b2c1d4e5_p001_table_002
-    """
-    return f"{doc_id}_p{page_num:03d}_{block_type}_{idx:03d}"
-
-
-def generate_pair_id() -> str:
-    """Уникальный 6-значный ID для training pair."""
-    return str(uuid.uuid4().int)[:6].zfill(6)
+    raw = f"{filename}:{time.time()}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
 def ensure_dir(path: str | Path) -> Path:
-    """Создать директорию если не существует, вернуть Path объект."""
+    """
+    Создаёт директорию если не существует, возвращает Path объект.
+    Аналог mkdir -p + возврат пути для chaining.
+
+    Пример:
+        pdf_path = ensure_dir(DATA_DIR / "uploads" / doc_id) / "file.pdf"
+    """
     p = Path(path)
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
-def get_result_dir(base_data_path: str, doc_id: str, block_type: str) -> Path:
+def format_vram_info() -> str:
     """
-    Возвращает путь к директории результатов для конкретного типа блоков.
-    Пример: /app/data/results/a3f9b2c1d4e5/tables/
+    Возвращает строку с текущим состоянием VRAM.
+    Используется в логах при старте и health check.
     """
-    path = Path(base_data_path) / "results" / doc_id / f"{block_type}s"
-    return ensure_dir(path)
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return "CUDA недоступна"
+        used  = torch.cuda.memory_allocated() / 1024**3
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        free  = total - used
+        return f"VRAM: {used:.1f}/{total:.1f} ГБ (свободно: {free:.1f} ГБ)"
+    except Exception:
+        return "VRAM: неизвестно"
 
 
-def blocks_to_markdown(blocks: list) -> str:
+def resize_for_inference(
+    image,
+    max_pixels: int = 2_000_000,
+):
     """
-    Конвертирует список блоков OCR-результатов в Markdown.
-    text → параграф, table → HTML as-is, formula → LaTeX-блок, figure → описание.
+    Масштабирует изображение если оно слишком большое для инференса.
+
+    max_pixels=2_000_000 (~1414×1414px) — безопасный лимит для dots.ocr
+    на RTX 4090 с 24 ГБ VRAM при bfloat16.
+
+    Сохраняет aspect ratio через пропорциональное масштабирование.
+    Возвращает (image, was_resized).
     """
+    from PIL import Image as PILImage
+
+    w, h   = image.size
+    pixels = w * h
+
+    if pixels <= max_pixels:
+        return image, False
+
+    scale  = (max_pixels / pixels) ** 0.5
+    new_w  = int(w * scale)
+    new_h  = int(h * scale)
+    resized = image.resize((new_w, new_h), PILImage.LANCZOS)
+    logger.debug(f"resize_for_inference: {w}×{h} → {new_w}×{new_h} (scale={scale:.2f})")
+    return resized, True
+
+
+def blocks_to_markdown(blocks: list[dict]) -> str:
+    """
+    Конвертирует список блоков OCR в читаемый Markdown документ.
+
+    Структура:
+    - Заголовок с метаданными
+    - Блоки сгруппированы по страницам
+    - Таблицы обёрнуты в HTML блок (рендерится в большинстве MD просмотрщиков)
+    - Формулы в $$...$$
+    - Рисунки как подписи
+    """
+    if not blocks:
+        return "# Документ пустой\n"
+
     lines = []
     current_page = None
 
-    for block in blocks:
-        page = block.get("page_num", 0)
-        if page != current_page:
-            current_page = page
-            lines.append(f"\n## Страница {page}\n")
+    for block in sorted(blocks, key=lambda b: (b.get("page_num", 0), b.get("block_idx", 0))):
+        page_num   = block.get("page_num", 0)
+        block_type = block.get("block_type", "text")
+        output     = block.get("output") or ""
 
-        btype  = block.get("block_type", "text")
-        output = block.get("output") or ""
-        conf   = block.get("confidence", 0)
-        bid    = block.get("block_id", "")
+        # Заголовок страницы при смене
+        if page_num != current_page:
+            current_page = page_num
+            lines.append(f"\n---\n\n## Страница {page_num}\n")
 
-        if not output:
+        if not output or "requires manual review" in output:
+            lines.append(f"*[{block_type}: требует ручной проверки]*\n")
             continue
 
-        if btype == "text":
-            lines.append(output.strip())
-            lines.append("")
-        elif btype == "table":
-            lines.append(f"<!-- table: {bid} (conf={conf:.2f}) -->")
-            lines.append(output.strip())
-            lines.append("")
-        elif btype == "formula":
-            latex = output.strip().lstrip("$").rstrip("$").strip()
-            lines.append(f"$$\n{latex}\n$$")
-            lines.append("")
-        elif btype == "figure":
-            lines.append(f"*[Figure: {bid}]*")
-            if output:
-                lines.append(f"> {output.strip()}")
-            lines.append("")
+        if block_type == "text":
+            lines.append(output + "\n")
+
+        elif block_type in {"table", "table_simple", "table_complex"}:
+            # HTML таблица в markdown
+            lines.append("\n" + output + "\n")
+
+        elif block_type == "formula":
+            lines.append(f"\n$$\n{output}\n$$\n")
+
+        elif block_type == "figure":
+            lines.append(f"\n*[Рисунок: {output}]*\n")
+
         else:
-            lines.append(output.strip())
-            lines.append("")
+            lines.append(output + "\n")
 
     return "\n".join(lines)

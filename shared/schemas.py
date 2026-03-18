@@ -6,7 +6,9 @@ from enum import Enum
 
 class BlockType(str, Enum):
     TEXT = "text"
-    TABLE = "table"
+    TABLE         = "table"
+    TABLE_SIMPLE  = "table_simple"
+    TABLE_COMPLEX = "table_complex"
     FIGURE = "figure"
     FORMULA = "formula"
 

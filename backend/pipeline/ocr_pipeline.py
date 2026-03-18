@@ -164,7 +164,7 @@ class OCRPipeline:
                 )
 
                 # Очищаем VRAM после каждой таблицы — dots.ocr жадный
-                if block_type == "table":
+                if block_type in {"table", "table_simple", "table_complex"}:
                     import torch
                     torch.cuda.empty_cache()
 
@@ -213,6 +213,7 @@ class OCRPipeline:
             logger.debug("dots.ocr возвращён на GPU")
 
     def _process_block(self, image: Image.Image, block_type: str, model_id: str | None = None) -> str:
+        logger.debug(f"[_process_block] type={block_type!r} model_id={model_id!r}")
         """
         Выбирает модуль и запускает OCR для одного блока.
         Figure/fallback → выгружаем dots.ocr перед Ollama вызовом.
