@@ -52,7 +52,6 @@ services:
       - ./backend:/app            # hot-reload кода без rebuild
       - ./data:/app/data          # Данные пользователей
       - ./models:/app/models      # Веса моделей (кроме Ollama)
-      - ./shared:/app/shared      # Общие схемы и утилиты (ИСПРАВЛЕНО vs ТЗ)
       - model-cache:/root/.cache  # HuggingFace cache
       - easyocr-cache:/root/.EasyOCR  # EasyOCR модели (~100 МБ) — переиспользуется между запусками
     environment:

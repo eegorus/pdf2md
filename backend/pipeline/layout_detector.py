@@ -189,15 +189,28 @@ class LayoutDetector:
         return blocks
 
     def _merge_table_fragments(self, blocks):
-        """Склеивает header-row таблицы (отдельный bbox) с телом."""
+        """
+        Склеивает header-row таблицы с телом ТОЛЬКО при строгих условиях:
+          1. Верхний блок — тонкий (< HEADER_MAX_H px) → это строка-шапка
+          2. Зазор между блоками <= HEADER_TOUCH_GAP px (практически вплотную)
+          3. Горизонтальное перекрытие >= 40% ширины ВЕРХНЕГО блока
+
+        Всё остальное — отдельные таблицы, не трогаем.
+        """
+        HEADER_MAX_H    = 80   # px — максимальная высота строки-шапки
+        HEADER_TOUCH_GAP = 12  # px — максимальный зазор шапка↔тело
+
         table_types = {"table", "table_simple", "table_complex"}
         tables = [b for b in blocks if b.block_type in table_types]
         others = [b for b in blocks if b.block_type not in table_types]
+
         if len(tables) < 2:
             return blocks
+
         tables.sort(key=lambda b: (b.page_num, b.y1))
         merged_flags = [False] * len(tables)
         result = []
+
         for i, top in enumerate(tables):
             if merged_flags[i]:
                 continue
@@ -206,25 +219,43 @@ class LayoutDetector:
                 if merged_flags[j]:
                     continue
                 bot = tables[j]
+
+                # Разные страницы — стоп
                 if current.page_num != bot.page_num:
                     break
-                gap = bot.y1 - current.y2
-                if gap > TABLE_HEADER_GAP_PX:
+
+                gap    = bot.y1 - current.y2
+                top_h  = current.y2 - current.y1
+
+                # Слишком далеко — стоп
+                if gap > HEADER_TOUCH_GAP:
                     break
+
+                # Верхний блок должен быть тонким (header row)
+                if top_h > HEADER_MAX_H:
+                    break
+
+                # Горизонтальное перекрытие >= 40% ширины шапки
+                top_w    = current.x2 - current.x1
                 overlap_x = min(current.x2, bot.x2) - max(current.x1, bot.x1)
-                span      = max(current.x2, bot.x2) - min(current.x1, bot.x1)
-                if span > 0 and overlap_x / span >= 0.6:
+                if top_w > 0 and overlap_x / top_w >= 0.4:
                     current = type(current)(
-                        block_type=bot.block_type,
-                        x1=min(current.x1, bot.x1), y1=current.y1,
-                        x2=max(current.x2, bot.x2), y2=bot.y2,
-                        confidence=max(current.confidence, bot.confidence),
-                        raw_class=current.raw_class + "+hdr",
-                        page_num=current.page_num,
-                        block_idx=current.block_idx,
+                        block_type  = bot.block_type,
+                        x1          = min(current.x1, bot.x1),
+                        y1          = current.y1,
+                        x2          = max(current.x2, bot.x2),
+                        y2          = bot.y2,
+                        confidence  = max(current.confidence, bot.confidence),
+                        raw_class   = current.raw_class + "+hdr",
+                        page_num    = current.page_num,
+                        block_idx   = current.block_idx,
                     )
                     merged_flags[j] = True
+                else:
+                    break
+
             result.append(current)
+
         result += others
         result.sort(key=lambda b: (b.page_num, b.y1, b.x1))
         return result
@@ -280,7 +311,7 @@ class LayoutDetector:
             h = b.y2 - b.y1
             b.block_type = (
                 "table_complex"
-                if (w > img_w * TABLE_COMPLEX_RATIO or h > TABLE_COMPLEX_MIN_H or (h and w / h > 2.5))
+                if (w > img_w * TABLE_COMPLEX_RATIO or h > TABLE_COMPLEX_MIN_H)
                 else "table_simple"
             )
         return blocks
