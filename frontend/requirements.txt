@@ -7,3 +7,4 @@ pandas>=2.1
 # для отображения HTML-таблиц в интерфейсе
 beautifulsoup4>=4.12
 streamlit-image-coordinates>=0.4
+streamlit-drawable-canvas-fix

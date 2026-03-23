@@ -137,7 +137,7 @@ class ModelsStatus(BaseModel):
 
 class HealthResponse(BaseModel):
     status:               str
-    version:              str
+    version:              str = "1.1.0"
     models_loaded:        ModelsStatus
-    gpu_memory_used_gb:   float
-    gpu_memory_total_gb:  float
+    gpu_memory_used_gb:   Optional[float] = None
+    gpu_memory_total_gb:  Optional[float] = None

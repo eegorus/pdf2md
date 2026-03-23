@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 # shared/ монтируется как /app/shared через docker-compose volume
 sys.path.insert(0, "/app")
-from shared.schemas import HealthResponse, ProcessingStatus
+from shared.schemas import HealthResponse
 
 # ── Логирование ───────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

@@ -99,6 +99,7 @@ services:
     ports:
       - "8501:8501"
     volumes:
+      - ./frontend:/app    # hot-reload кода без rebuild
       - ./data:/app/data   # Нужен для отображения результатов и картинок
     environment:
       - BACKEND_URL=${BACKEND_URL}
