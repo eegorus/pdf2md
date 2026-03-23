@@ -46,15 +46,16 @@ def fetch_blocks(doc_id: str):
     except Exception:
         return []
 
-@st.cache_data(ttl=60)
-def fetch_block_image(doc_id: str, block_id: str, _cache_bust: int = 0):
-    """Возвращает bytes превью блока или None. _cache_bust инвалидирует кэш."""
+@st.cache_data(ttl=5)
+def fetch_block_preview(doc_id: str, block_id: str, _bust: int = 0) -> bytes | None:
+    """_bust меняется → Streamlit считает новым вызовом → не берёт из кэша."""
     try:
-        r = httpx.get(
-            f"{BACKEND_URL}/documents/{doc_id}/block-image/{block_id}", timeout=10
+        resp = httpx.get(
+            f"{BACKEND_URL}/documents/{doc_id}/block-image/{block_id}",
+            timeout=5,
         )
-        if r.status_code == 200:
-            return r.content
+        if resp.status_code == 200:
+            return resp.content
     except Exception:
         pass
     return None
@@ -777,9 +778,11 @@ with col_right:
     st.markdown(f"Conf: `{conf:.2f}`")
 
     _preview_bust = st.session_state.get(f"preview_bust_{selected_id}", 0)
-    _preview_bytes = fetch_block_image(doc_id, selected_id, _cache_bust=_preview_bust)
+    _preview_bytes = fetch_block_preview(doc_id, selected_id, _bust=_preview_bust)
     if _preview_bytes:
         st.image(_preview_bytes, use_container_width=True)
+    else:
+        st.caption("Нет превью")
 
     # ── Геометрия и тип ───────────────────────────────────────────────────
     with st.expander("✏️ Геометрия и тип", expanded=False):
@@ -862,9 +865,9 @@ with col_right:
                             timeout=10,
                         )
                         if _r.status_code == 200:
-                            # Инкрементируем bust превью → fetch_block_image вернёт новый кроп
-                            _bust = st.session_state.get(f"preview_bust_{selected_id}", 0)
-                            st.session_state[f"preview_bust_{selected_id}"] = _bust + 1
+                            import time
+                            st.session_state[f"preview_bust_{selected_id}"] = int(time.time())
+                            fetch_block_preview.clear()
                             fetch_blocks.clear()
                             st.session_state.pop("pending_bbox", None)
                             st.session_state.pop("pending_bbox_for", None)
