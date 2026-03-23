@@ -47,6 +47,20 @@ def fetch_blocks(doc_id: str):
         return []
 
 @st.cache_data(ttl=60)
+def fetch_block_image(doc_id: str, block_id: str, _cache_bust: int = 0):
+    """Возвращает bytes превью блока или None. _cache_bust инвалидирует кэш."""
+    try:
+        r = httpx.get(
+            f"{BACKEND_URL}/documents/{doc_id}/block-image/{block_id}", timeout=10
+        )
+        if r.status_code == 200:
+            return r.content
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=60)
 def fetch_page_image(doc_id: str, page_num: int, max_w: int = 740, max_h: int = 960):
     """Возвращает (resized_img, orig_w, orig_h, scale) или (None, 0, 0, 1.0)."""
     try:
@@ -112,9 +126,10 @@ _defaults = {
     "viewer_confirm_delete": False,
     "viewer_model_dialog_open": False,
     "viewer_model_choices": {},      # {block_type: model_id}
-    # Режим рисования
+    # Режимы
     "viewer_draw_mode": False,
     "viewer_draw_type": "text",
+    "viewer_mode": None,              # None | "edit" — редактирование bbox
     "viewer_canvas_version": 0,       # инкрементируем чтобы сбросить st_canvas
     # Размеры оригинала
     "viewer_orig_w": 0,
@@ -321,6 +336,7 @@ with col_left:
             st.session_state.viewer_page            = 1
             st.session_state.viewer_selected_block  = None
             st.session_state.viewer_draw_mode       = False
+            st.session_state.viewer_mode            = None
             st.session_state.viewer_canvas_version += 1
             fetch_blocks.clear()
             st.rerun()
@@ -552,6 +568,71 @@ with col_main:
             else:
                 st.info("🖱 Нарисуй прямоугольник для нового блока (drag)", icon=None)
 
+        elif st.session_state.viewer_mode == "edit" and st.session_state.viewer_selected_block:
+            # ── EDIT MODE: st_canvas transform (drag bbox выбранного блока) ──
+            _sel = next(
+                (b for b in all_blocks if b["block_id"] == st.session_state.viewer_selected_block),
+                None,
+            )
+            if _sel:
+                _bx = _sel.get("bbox", [0, 0, 100, 100])
+                _ex1, _ey1, _ex2, _ey2 = _bx
+                _initial = {
+                    "version": "5.2.4",
+                    "objects": [{
+                        "type": "rect",
+                        "left":   float(_ex1 * scale),
+                        "top":    float(_ey1 * scale),
+                        "width":  float((_ex2 - _ex1) * scale),
+                        "height": float((_ey2 - _ey1) * scale),
+                        "fill":   "rgba(255, 165, 0, 0.15)",
+                        "stroke": "#FF8C00",
+                        "strokeWidth": 3,
+                        "scaleX": 1.0,
+                        "scaleY": 1.0,
+                        "angle":  0,
+                        "selectable": True,
+                    }],
+                }
+                edit_canvas_key = (
+                    f"canvas_{doc_id}_p{st.session_state.viewer_page}"
+                    f"_edit_{st.session_state.viewer_selected_block}"
+                    f"_v{st.session_state.viewer_canvas_version}"
+                )
+                edit_result = st_canvas(
+                    fill_color="rgba(255, 165, 0, 0.15)",
+                    stroke_width=3,
+                    stroke_color="#FF8C00",
+                    background_image=annotated,
+                    initial_drawing=_initial,
+                    update_streamlit=True,
+                    height=annotated.height,
+                    width=img_w,
+                    drawing_mode="transform",
+                    key=edit_canvas_key,
+                )
+                if edit_result is not None and edit_result.json_data is not None:
+                    _objs = [
+                        o for o in edit_result.json_data.get("objects", [])
+                        if o.get("type") == "rect"
+                    ]
+                    if _objs:
+                        _o   = _objs[0]
+                        _nl  = _o.get("left", 0)
+                        _nt  = _o.get("top", 0)
+                        _nw  = _o.get("width", 0) * _o.get("scaleX", 1)
+                        _nh  = _o.get("height", 0) * _o.get("scaleY", 1)
+                        nx1  = max(0, int(_nl / scale))
+                        ny1  = max(0, int(_nt / scale))
+                        nx2  = min(orig_w, int((_nl + _nw) / scale))
+                        ny2  = min(orig_h, int((_nt + _nh) / scale))
+                        # Сохраняем pending если координаты значимо изменились
+                        if max(abs(nx1-_ex1), abs(ny1-_ey1), abs(nx2-_ex2), abs(ny2-_ey2)) > 3:
+                            st.session_state["pending_bbox"]     = [nx1, ny1, nx2, ny2]
+                            st.session_state["pending_bbox_for"] = st.session_state.viewer_selected_block
+            else:
+                st.session_state.viewer_mode = None
+
         else:
             # ── VIEW MODE: streamlit_image_coordinates (клик → выбор блока) ──
             coords = streamlit_image_coordinates(
@@ -576,6 +657,7 @@ with col_main:
                     st.session_state.viewer_selected_block = clicked
                     st.session_state.viewer_edit_mode      = False
                     st.session_state.viewer_confirm_delete = False
+                    st.session_state.viewer_mode           = None
                     st.rerun()
     else:
         st.warning("Изображение страницы недоступно")
@@ -611,6 +693,7 @@ with col_main:
                         st.session_state.viewer_selected_block = None if is_sel else bid
                         st.session_state.viewer_edit_mode      = False
                         st.session_state.viewer_confirm_delete = False
+                        st.session_state.viewer_mode           = None
                         st.rerun()
     else:
         st.caption("Нет блоков на этой странице")
@@ -693,58 +776,119 @@ with col_right:
     st.markdown(f"Статус: {status_icon} `{bstatus}`")
     st.markdown(f"Conf: `{conf:.2f}`")
 
-    try:
-        resp = httpx.get(
-            f"{BACKEND_URL}/documents/{doc_id}/block-image/{selected_id}", timeout=10
-        )
-        if resp.status_code == 200:
-            st.image(resp.content, use_container_width=True)   # ← исправлен deprecated
-    except Exception:
-        pass
+    _preview_bust = st.session_state.get(f"preview_bust_{selected_id}", 0)
+    _preview_bytes = fetch_block_image(doc_id, selected_id, _cache_bust=_preview_bust)
+    if _preview_bytes:
+        st.image(_preview_bytes, use_container_width=True)
 
     # ── Геометрия и тип ───────────────────────────────────────────────────
     with st.expander("✏️ Геометрия и тип", expanded=False):
-        type_list = ["text", "table", "table_simple", "table_complex", "formula", "figure"]
-        edit_btype = st.selectbox(
+        # Тип — сохраняется немедленно при изменении
+        _type_opts = ["text", "table", "table_simple", "table_complex", "formula", "figure"]
+        new_type = st.selectbox(
             "Тип",
-            type_list,
-            index=type_list.index(btype) if btype in type_list else 0,
-            key=f"edit_btype_{selected_id}",
+            _type_opts,
+            index=_type_opts.index(btype) if btype in _type_opts else 0,
+            key=f"sel_type_{selected_id}_{btype}",  # key со значением → сброс при undo
         )
-        bx = bbox if len(bbox) == 4 else [0, 0, 100, 100]
-        lw = st.session_state.viewer_orig_w or 9999
-        lh = st.session_state.viewer_orig_h or 9999
-        c1, c2 = st.columns(2)
-        with c1:
-            ex1 = st.number_input("x1", 0, lw, int(bx[0]), key=f"ex1_{selected_id}")
-            ex2 = st.number_input("x2", 0, lw, int(bx[2]), key=f"ex2_{selected_id}")
-        with c2:
-            ey1 = st.number_input("y1", 0, lh, int(bx[1]), key=f"ey1_{selected_id}")
-            ey2 = st.number_input("y2", 0, lh, int(bx[3]), key=f"ey2_{selected_id}")
-        if st.button("💾 Сохранить геометрию", use_container_width=True,
-                     type="primary", key=f"sgeo_{selected_id}"):
-            if ex2 > ex1 and ey2 > ey1:
-                try:
+        if new_type != btype:
+            _stk = st.session_state.undo_stack
+            _stk.append({"action": "patch", "block_id": selected_id, "snapshot": dict(block)})
+            if len(_stk) > 10:
+                _stk.pop(0)
+            try:
+                _r = httpx.patch(
+                    f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
+                    json={"block_type": new_type},
+                    timeout=5,
+                )
+                if _r.status_code == 200:
+                    fetch_blocks.clear()
+                    st.rerun()
+                else:
+                    _stk.pop()
+                    st.error(f"Ошибка: {_r.text[:60]}")
+            except Exception as _e:
+                _stk.pop()
+                st.error(str(_e))
+
+        st.divider()
+
+        # Геометрия — редактирование через drag на канвасе
+        _edit_active = st.session_state.viewer_mode == "edit"
+        if not _edit_active:
+            if st.button(
+                "📐 Редактировать геометрию",
+                type="primary",
+                use_container_width=True,
+                key="btn_edit_geom",
+            ):
+                # Сбрасываем старый pending при входе в edit
+                st.session_state.pop("pending_bbox", None)
+                st.session_state.pop("pending_bbox_for", None)
+                st.session_state.viewer_mode           = "edit"
+                st.session_state.viewer_canvas_version += 1
+                st.rerun()
+            st.caption(f"bbox: {bbox[0]}, {bbox[1]} → {bbox[2]}, {bbox[3]}")
+            st.caption(f"размер: {bbox[2]-bbox[0]} × {bbox[3]-bbox[1]} px")
+        else:
+            st.info("Тяни за углы или стороны рамки на изображении.", icon=None)
+
+            _pending     = st.session_state.get("pending_bbox")
+            _pending_for = st.session_state.get("pending_bbox_for")
+            _has_pending = (
+                _pending is not None
+                and _pending_for == selected_id
+                and _pending != list(bbox)
+            )
+
+            _sc1, _sc2 = st.columns(2)
+            with _sc1:
+                if st.button(
+                    "💾 Сохранить",
+                    type="primary",
+                    disabled=not _has_pending,
+                    use_container_width=True,
+                    key="btn_save_geom",
+                ):
                     _stk = st.session_state.undo_stack
                     _stk.append({"action": "patch", "block_id": selected_id, "snapshot": dict(block)})
                     if len(_stk) > 10:
                         _stk.pop(0)
-                    resp = httpx.patch(
-                        f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
-                        json={"block_type": edit_btype, "bbox": [ex1, ey1, ex2, ey2]},
-                        timeout=5,
-                    )
-                    if resp.status_code == 200:
-                        fetch_blocks.clear()
-                        all_blocks[:] = fetch_blocks(doc_id)
-                        st.success("✅ Сохранено")
-                    else:
-                        _stk.pop()  # откатываем пуш если запрос упал
-                        st.error(f"Ошибка: {resp.text[:80]}")
-                except Exception as e:
-                    st.error(str(e))
-            else:
-                st.warning("x2 > x1 и y2 > y1!")
+                    try:
+                        _r = httpx.patch(
+                            f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
+                            json={"bbox": _pending},
+                            timeout=10,
+                        )
+                        if _r.status_code == 200:
+                            # Инкрементируем bust превью → fetch_block_image вернёт новый кроп
+                            _bust = st.session_state.get(f"preview_bust_{selected_id}", 0)
+                            st.session_state[f"preview_bust_{selected_id}"] = _bust + 1
+                            fetch_blocks.clear()
+                            st.session_state.pop("pending_bbox", None)
+                            st.session_state.pop("pending_bbox_for", None)
+                            st.session_state.viewer_mode           = None
+                            st.session_state.viewer_canvas_version += 1
+                            st.rerun()
+                        else:
+                            _stk.pop()
+                            st.error(f"Ошибка: {_r.text[:60]}")
+                    except Exception as _e:
+                        _stk.pop()
+                        st.error(str(_e))
+            with _sc2:
+                if st.button(
+                    "✕ Отмена",
+                    type="secondary",
+                    use_container_width=True,
+                    key="btn_cancel_geom",
+                ):
+                    st.session_state.pop("pending_bbox", None)
+                    st.session_state.pop("pending_bbox_for", None)
+                    st.session_state.viewer_mode           = None
+                    st.session_state.viewer_canvas_version += 1
+                    st.rerun()
 
     # ── Удалить блок ──────────────────────────────────────────────────────
     if not st.session_state.viewer_confirm_delete:

@@ -361,19 +361,47 @@ async def patch_block(doc_id: str, block_id: str, payload: dict = Body(...)):
 
     blocks = json.loads(blocks_file.read_text())
     updated = False
+    updated_block = None
     for block in blocks:
         if block.get("block_id") == block_id:
-            # original_output не трогаем — это эталон для training pairs
             if "output" in payload and not block.get("original_output"):
                 block["original_output"] = block.get("output") or ""
             for field in ("status", "output", "block_type", "bbox"):
                 if field in payload:
                     block[field] = payload[field]
             updated = True
+            updated_block = block
             break
 
     if not updated:
         raise HTTPException(status_code=404, detail=f"Блок {block_id} не найден")
+
+    # ── Перекропировать если обновился bbox ──────────────────────────────────
+    if "bbox" in payload and updated_block is not None:
+        try:
+            from PIL import Image as PILImage
+            page_num = updated_block.get("page_num", 1)
+            new_bbox = payload["bbox"]
+            page_png = DATA_DIR / "pages" / doc_id / f"page_{page_num:03d}.png"
+            if not page_png.exists():
+                page_png = DATA_DIR / "pages" / doc_id / f"page{page_num:03d}.png"
+            if page_png.exists() and len(new_bbox) == 4:
+                page_img = PILImage.open(str(page_png)).convert("RGB")
+                pw, ph   = page_img.size
+                x1, y1, x2, y2 = new_bbox
+                x1 = max(0, min(int(x1), pw - 1))
+                y1 = max(0, min(int(y1), ph - 1))
+                x2 = max(x1 + 1, min(int(x2), pw))
+                y2 = max(y1 + 1, min(int(y2), ph))
+                crop      = page_img.crop((x1, y1, x2, y2))
+                crops_dir = DATA_DIR / "results" / doc_id / "blocks"
+                crops_dir.mkdir(parents=True, exist_ok=True)
+                crop_path = crops_dir / f"{block_id}.png"
+                crop.save(str(crop_path))
+                updated_block["image_path"] = str(crop_path)
+                logger.info(f"Кроп обновлён: {crop_path} ({x2-x1}x{y2-y1}px)")
+        except Exception as _e:
+            logger.error(f"Ошибка обновления кропа для {block_id}: {_e}")
 
     blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
     return {"block_id": block_id, "updated": True, **payload}
