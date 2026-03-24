@@ -118,8 +118,15 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
             lines.append(output + "\n")
 
         elif block_type in {"table", "table_simple", "table_complex"}:
-            # HTML таблица в markdown
-            lines.append("\n" + output + "\n")
+            # Вырезаем только <table>...</table> — убираем <html><body> враппер
+            import re
+            table_match = re.search(
+                r'(<table[\s\S]*?</table>)',
+                output,
+                re.IGNORECASE | re.DOTALL
+            )
+            clean = table_match.group(1) if table_match else output
+            lines.append("\n" + clean + "\n")
 
         elif block_type == "formula":
             lines.append(f"\n$$\n{output}\n$$\n")

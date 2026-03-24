@@ -4,6 +4,7 @@ POST /processing/{doc_id}/start   — запустить layout detection
 GET  /processing/{doc_id}/status  — статус
 GET  /processing/{doc_id}/results — результаты по блокам
 """
+import asyncio
 import os
 import json
 import logging
@@ -13,6 +14,10 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Body
 
 import sys
 sys.path.insert(0, "/app")
+
+# Хранилище статуса OCR-задач (in-memory, один на процесс)
+# { doc_id: {"status": "running"|"done"|"error", "processed": N, "total": N, "errors": N} }
+_ocr_status: dict[str, dict] = {}
 
 logger = logging.getLogger("prms.router.processing")
 router = APIRouter()
@@ -115,7 +120,12 @@ async def start_processing(doc_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
 
     meta = json.loads(meta_file.read_text())
-    if meta.get("status") not in ("split_done", "layout_done"):
+    if meta.get("status") not in ("split_done",):
+        if meta.get("status") in ("layout_done", "ocr_done"):
+            raise HTTPException(
+                status_code=400,
+                detail="layout_already_done",
+            )
         raise HTTPException(
             status_code=400,
             detail=f"Документ не готов к обработке. Статус: {meta.get('status')}"
@@ -229,7 +239,7 @@ async def ocr_single_block(doc_id: str, block_id: str,
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{doc_id}/ocr", summary="Запустить OCR всех блоков")
+@router.post("/{doc_id}/ocr", summary="Запустить OCR всех блоков (фоновая задача)")
 async def start_ocr(doc_id: str, payload: dict = Body(default={})):
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
     if not meta_file.exists():
@@ -242,25 +252,62 @@ async def start_ocr(doc_id: str, payload: dict = Body(default={})):
             detail=f"Сначала запусти layout detection. Статус: {meta.get('status')}"
         )
 
+    # Если уже выполняется — не запускаем повторно
+    if _ocr_status.get(doc_id, {}).get("status") == "running":
+        s = _ocr_status[doc_id]
+        return {"doc_id": doc_id, "status": "already_running",
+                "processed": s["processed"], "total": s["total"]}
+
     from main import models
     from pipeline.ocr_pipeline import OCRPipeline
     from starlette.concurrency import run_in_threadpool
 
     model_choices = payload.get("model_choices", {})
-    pipeline = OCRPipeline(models=models, data_dir=DATA_DIR)
 
-    try:
-        stats = await run_in_threadpool(pipeline.process_document, doc_id, model_choices)
-        return {
-            "doc_id":    doc_id,
-            "status":    "ocr_done",
-            "processed": stats.get("processed", 0),
-            "errors":    stats.get("errors", 0),
-            "by_type":   stats.get("by_type", {}),
-        }
-    except Exception as e:
-        logger.error(f"OCR pipeline ошибка ({doc_id}): {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
+    total = len(json.loads(blocks_file.read_text())) if blocks_file.exists() else 0
+
+    _ocr_status[doc_id] = {"status": "running", "processed": 0, "total": total, "errors": 0}
+
+    async def _run():
+        try:
+            pipeline = OCRPipeline(models=models, data_dir=DATA_DIR)
+
+            def on_progress(processed: int, errors: int):
+                _ocr_status[doc_id]["processed"] = processed
+                _ocr_status[doc_id]["errors"]    = errors
+
+            stats = await run_in_threadpool(
+                pipeline.process_document, doc_id, model_choices, on_progress
+            )
+            _ocr_status[doc_id].update({
+                "status":    "done",
+                "processed": stats.get("processed", 0),
+                "errors":    stats.get("errors", 0),
+                "by_type":   stats.get("by_type", {}),
+            })
+        except Exception as e:
+            logger.error(f"OCR фоновая задача ({doc_id}): {e}", exc_info=True)
+            _ocr_status[doc_id]["status"]    = "error"
+            _ocr_status[doc_id]["error_msg"] = str(e)
+
+    asyncio.create_task(_run())
+    return {"doc_id": doc_id, "status": "started", "total": total}
+
+
+@router.get("/{doc_id}/ocr-status", summary="Статус OCR задачи")
+async def get_ocr_status(doc_id: str):
+    status = _ocr_status.get(doc_id)
+    if not status:
+        blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
+        if blocks_file.exists():
+            blocks = json.loads(blocks_file.read_text())
+            done = sum(1 for b in blocks if b.get("status") == "ocr_done")
+            if done > 0:
+                return {"status": "done", "processed": done,
+                        "total": len(blocks), "errors": 0}
+        return {"status": "idle", "processed": 0, "total": 0, "errors": 0}
+    return status
 
 
 @router.post("/{doc_id}/export", summary="Экспорт результатов")

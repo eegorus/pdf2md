@@ -135,7 +135,7 @@ class TableRecognizer:
         with torch.no_grad():
             output_ids = self.model.generate(
                 **inputs,
-                max_new_tokens=2048,    # таблицы могут быть длинными
+                max_new_tokens=8192,    # широкие таблицы с 10+ колонками требуют 4000+ токенов
                 do_sample=False,        # greedy decoding — детерминированность
                 temperature=None,       # отключаем при do_sample=False
                 top_p=None,

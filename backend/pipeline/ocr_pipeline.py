@@ -111,7 +111,7 @@ class OCRPipeline:
         logger.info(f"✅ OCR блока {block_id}: {len(output)} символов")
         return block
 
-    def process_document(self, doc_id: str, model_choices: dict | None = None) -> dict:
+    def process_document(self, doc_id: str, model_choices: dict | None = None, on_progress=None) -> dict:
         """
         Запускает OCR для всех блоков документа.
 
@@ -135,23 +135,49 @@ class OCRPipeline:
 
         logger.info(f"OCR pipeline: {doc_id} — {len(blocks)} блоков (уже готово: {already_done})")
 
-        stats = {"processed": 0, "errors": 0, "by_type": {}}
+        # Сортируем: сначала text/table (EasyOCR + dots.ocr), потом figure (Ollama)
+        # Это позволяет выгрузить dots.ocr один раз перед запуском Ollama
+        _block_order = ["text", "table_simple", "table_complex", "table", "formula", "figure"]
+        blocks_sorted = sorted(
+            blocks,
+            key=lambda b: _block_order.index(b.get("block_type", "text"))
+            if b.get("block_type") in _block_order else 99
+        )
 
-        for i, block in enumerate(blocks):
-            block_type = block["block_type"]
+        stats = {"processed": 0, "errors": 0, "by_type": {}}
+        last_type = None
+
+        for i, block in enumerate(blocks_sorted):
+            block_type = block.get("block_type", "text")
             image_path = block.get("image_path", "")
+
+            # При переходе к figure — выгрузить dots.ocr из VRAM один раз
+            if block_type == "figure" and last_type != "figure":
+                if hasattr(self.models, 'table_model') and self.models.table_model is not None:
+                    import torch
+                    logger.info("Выгружаем dots.ocr из VRAM перед Ollama...")
+                    self.models.table_model.cpu()
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    free_gb = (torch.cuda.get_device_properties(0).total_memory
+                               - torch.cuda.memory_allocated()) / 1e9
+                    logger.info(f"VRAM свободно после выгрузки: {free_gb:.1f} GB")
+
+            last_type = block_type
 
             if not image_path or not Path(image_path).exists():
                 logger.warning(f"Блок {block['block_id']}: файл не найден")
                 block["output"] = "[error: image not found]"
                 block["status"] = "error"
                 stats["errors"] += 1
+                if on_progress and (i + 1) % 10 == 0:
+                    on_progress(stats["processed"], stats["errors"])
                 continue
 
             try:
-                image  = Image.open(image_path).convert("RGB")
+                image    = Image.open(image_path).convert("RGB")
                 model_id = (model_choices or {}).get(block_type)
-                output = self._process_block(image, block_type, model_id=model_id)
+                output   = self._process_block(image, block_type, model_id=model_id)
 
                 block["output"] = output
                 # Сохраняем оригинал один раз — original_output нужен для training pairs
@@ -169,7 +195,9 @@ class OCRPipeline:
                     torch.cuda.empty_cache()
 
                 if (i + 1) % 10 == 0:
-                    logger.info(f"  Обработано {i+1}/{len(blocks)} блоков...")
+                    logger.info(f"  Обработано {i+1}/{len(blocks_sorted)} блоков...")
+                    if on_progress:
+                        on_progress(stats["processed"], stats["errors"])
 
             except Exception as e:
                 logger.error(f"Блок {block['block_id']}: {e}", exc_info=True)
@@ -177,10 +205,12 @@ class OCRPipeline:
                 block["status"] = "error"
                 stats["errors"] += 1
 
-        # Сохраняем обновлённые блоки
+        # Сохраняем обновлённые блоки (порядок из blocks_sorted — по типу)
         blocks_file.write_text(
-            json.dumps(blocks, ensure_ascii=False, indent=2)
+            json.dumps(blocks_sorted, ensure_ascii=False, indent=2)
         )
+        if on_progress:
+            on_progress(stats["processed"], stats["errors"])
 
         # Обновляем статус документа
         meta_file = self.data_dir / "uploads" / doc_id / "meta.json"

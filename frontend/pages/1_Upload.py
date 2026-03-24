@@ -182,12 +182,21 @@ elif st.session_state.upload_stage == "mode":
         )
         st.markdown("")
         if st.button("🔬 Детальный режим", use_container_width=True):
-            # Запускаем layout detection и переходим в Markup
             with st.spinner("Запускаем layout detection..."):
-                res = api("POST", f"/processing/{doc_id}/start")
-            if res:
-                st.session_state.upload_stage = "detail_layout"
-                st.rerun()
+                try:
+                    resp = httpx.post(
+                        f"{BACKEND_URL}/processing/{doc_id}/start", timeout=10
+                    )
+                    if resp.status_code == 400 and "layout_already_done" in resp.text:
+                        st.session_state["viewer_doc_id"] = doc_id
+                        st.switch_page("pages/2_Viewer.py")
+                    elif resp.status_code == 200:
+                        st.session_state.upload_stage = "detail_layout"
+                        st.rerun()
+                    else:
+                        st.error(f"Ошибка: {resp.text}")
+                except Exception as _e:
+                    st.error(str(_e))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ЭТАП 2а — быстрый режим: настройка парсера

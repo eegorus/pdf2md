@@ -2,6 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import httpx
 import os
+import time
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_drawable_canvas import st_canvas
@@ -80,6 +81,56 @@ def fetch_page_image(doc_id: str, page_num: int, max_w: int = 740, max_h: int = 
     return None, 0, 0, 1.0
 
 
+def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
+    export_formats = [
+        ("markdown", "📄 MARKDOWN", "text/markdown",    "md"),
+        ("json",     "🗂 JSON",     "application/json", "json"),
+        ("csv",      "📊 CSV",      "text/csv",         "csv"),
+    ]
+    for fmt, label, mime, ext in export_formats:
+        cache_key = f"{key_prefix}_bytes_{fmt}"
+
+        if has_ocr:
+            if st.button(label, use_container_width=True, key=f"{key_prefix}_gen_{fmt}"):
+                with st.spinner(f"Генерируем {fmt}..."):
+                    try:
+                        httpx.post(
+                            f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}",
+                            timeout=60,
+                        )
+                        dl = httpx.get(
+                            f"{BACKEND_URL}/processing/{doc_id}/export-file/{fmt}",
+                            timeout=30,
+                        )
+                        if dl.status_code == 200:
+                            st.session_state[cache_key] = {
+                                "content":  dl.content,
+                                "filename": f"{doc_id[:8]}.{ext}",
+                                "mime":     mime,
+                            }
+                        else:
+                            st.error(f"Ошибка экспорта: {dl.status_code}")
+                    except Exception as e:
+                        st.error(str(e))
+
+            cached = st.session_state.get(cache_key)
+            if cached:
+                st.download_button(
+                    f"⬇ Скачать .{ext}",
+                    data=cached["content"],
+                    file_name=cached["filename"],
+                    mime=cached["mime"],
+                    use_container_width=True,
+                    key=f"{key_prefix}_dl_{fmt}",
+                )
+        else:
+            st.button(label, disabled=True, use_container_width=True,
+                      key=f"{key_prefix}_dis_{fmt}")
+
+    if not has_ocr:
+        st.caption("сначала запусти OCR")
+
+
 def draw_blocks_on_image(
     image: Image.Image,
     blocks: list,
@@ -147,7 +198,46 @@ st.title("🔍 Document Viewer")
 
 doc_id = st.session_state.get("viewer_doc_id") or st.session_state.get("viewer_doc_id")
 if not doc_id:
-    st.info("👆 Выберите документ на странице **Upload**")
+    st.markdown("### 📁 Выберите документ")
+
+    docs = fetch_documents()
+
+    if not docs:
+        st.info("Нет загруженных документов. Перейди на страницу **Upload**.")
+        st.stop()
+
+    STATUS_ICON = {
+        "ocr_done":    "✅",
+        "layout_done": "🗂",
+        "split_done":  "📄",
+        "processing":  "⏳",
+        "error":       "❌",
+    }
+
+    for doc in docs:
+        did    = doc["doc_id"]
+        name   = doc.get("filename", did)[:50]
+        pages  = doc.get("page_count", "?")
+        status = doc.get("status", "")
+        icon   = STATUS_ICON.get(status, "📄")
+
+        col_info, col_btn = st.columns([4, 1])
+        with col_info:
+            st.markdown(f"**{icon} {name}**")
+            st.caption(f"{pages} стр. · статус: `{status}`")
+        with col_btn:
+            can_open = status in ("layout_done", "ocr_done")
+            if st.button(
+                "Открыть",
+                key=f"open_{did}",
+                disabled=not can_open,
+                use_container_width=True,
+                type="primary" if can_open else "secondary",
+            ):
+                st.session_state["viewer_doc_id"] = did
+                st.rerun()
+        st.divider()
+
     st.stop()
 
 all_blocks = fetch_blocks(doc_id)
@@ -295,31 +385,57 @@ def model_selection_dialog(doc_id: str, all_blocks: list):
         if st.button("▶ Запустить распознавание", type="primary",
                      use_container_width=True, key="modal_run"):
             st.session_state.viewer_model_choices = choices
-            with st.spinner("Распознаём блоки документа..."):
-                try:
-                    resp = _httpx.post(
-                        f"{BACKEND_URL}/processing/{doc_id}/ocr",
-                        json={"model_choices": choices},
-                        timeout=600,
-                    )
-                    if resp.status_code == 200:
-                        result = resp.json()
-                        processed = result.get("processed", 0)
-                        errors    = result.get("errors", 0)
-                        st.success(f"✅ Готово! Обработано: {processed}, ошибок: {errors}")
-                        fetch_blocks.clear()
-                        st.session_state["ocr_completed"] = True
+            try:
+                resp = _httpx.post(
+                    f"{BACKEND_URL}/processing/{doc_id}/ocr",
+                    json={"model_choices": choices},
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get("status") in ("started", "already_running"):
+                        st.session_state["ocr_polling"] = True
+                        st.session_state["ocr_doc_id"]  = doc_id
                         st.rerun()
-                    else:
-                        st.error(f"Ошибка {resp.status_code}: {resp.text[:200]}")
-                except _httpx.TimeoutException:
-                    st.error("Таймаут — документ очень большой, попробуй OCR блоков по страницам")
-                except Exception as e:
-                    st.error(str(e))
+                else:
+                    st.error(f"Ошибка запуска: {resp.status_code} — {resp.text[:200]}")
+            except Exception as e:
+                st.error(str(e))
     with cancel_col:
         if st.button("Отмена", use_container_width=True, key="modal_cancel"):
             st.rerun()
 
+
+# ── OCR polling ──────────────────────────────────────────────────────────────
+if st.session_state.get("ocr_polling") and st.session_state.get("ocr_doc_id") == doc_id:
+    try:
+        _ocr_resp = httpx.get(
+            f"{BACKEND_URL}/processing/{doc_id}/ocr-status", timeout=5
+        )
+        if _ocr_resp.status_code == 200:
+            _ocr_st   = _ocr_resp.json()
+            _processed = _ocr_st.get("processed", 0)
+            _total     = _ocr_st.get("total", 1) or 1
+            _status    = _ocr_st.get("status", "running")
+
+            if _status == "running":
+                st.info(f"⏳ OCR выполняется: {_processed} / {_total} блоков...")
+                st.progress(_processed / _total)
+                time.sleep(3)
+                st.rerun()
+            elif _status == "done":
+                st.success(
+                    f"✅ OCR завершён! Обработано: {_processed}, "
+                    f"ошибок: {_ocr_st.get('errors', 0)}"
+                )
+                st.session_state.pop("ocr_polling", None)
+                fetch_blocks.clear()
+            elif _status == "error":
+                st.error(f"❌ Ошибка OCR: {_ocr_st.get('error_msg', 'unknown')}")
+                st.session_state.pop("ocr_polling", None)
+    except Exception as _e:
+        st.warning(f"Не удалось получить статус OCR: {_e}")
+        st.session_state.pop("ocr_polling", None)
 
 col_left, col_main, col_right = st.columns([0.65, 3.0, 1.35])
 
@@ -328,6 +444,9 @@ col_left, col_main, col_right = st.columns([0.65, 3.0, 1.35])
 # ══════════════════════════════════════════════════════════════════════════════
 with col_left:
     st.markdown("### 📁 Документы")
+    if st.button("↩ Сменить документ", use_container_width=True, key="btn_change_doc"):
+        st.session_state.pop("viewer_doc_id", None)
+        st.rerun()
     docs = fetch_documents()
     for doc in docs:
         did    = doc["doc_id"]
@@ -346,6 +465,9 @@ with col_left:
             st.session_state.viewer_draw_mode       = False
             st.session_state.viewer_mode            = None
             st.session_state.viewer_canvas_version += 1
+            for _fmt in ("markdown", "json", "csv"):
+                st.session_state.pop(f"exp_left_bytes_{_fmt}", None)
+                st.session_state.pop(f"exp_right_bytes_{_fmt}", None)
             fetch_blocks.clear()
             st.rerun()
 
@@ -733,41 +855,7 @@ with col_right:
             b.get("status") in ("ocr_done", "accepted", "needs_review")
             for b in all_blocks
         )
-        _export_formats = [
-            ("markdown", "📄 MARKDOWN", "text/markdown",    "md"),
-            ("json",     "🗂 JSON",     "application/json", "json"),
-            ("csv",      "📊 CSV",      "text/csv",         "csv"),
-        ]
-        for _fmt, _label, _mime, _ext in _export_formats:
-            if _has_ocr:
-                if st.button(_label, use_container_width=True, key=f"exp_{_fmt}"):
-                    with st.spinner(f"Генерируем {_fmt}..."):
-                        try:
-                            httpx.post(
-                                f"{BACKEND_URL}/processing/{doc_id}/export?format={_fmt}",
-                                timeout=60,
-                            )
-                            dl = httpx.get(
-                                f"{BACKEND_URL}/processing/{doc_id}/export-file/{_fmt}",
-                                timeout=30,
-                            )
-                            if dl.status_code == 200:
-                                st.download_button(
-                                    f"⬇ Скачать .{_ext}",
-                                    data=dl.content,
-                                    file_name=f"{doc_id[:8]}.{_ext}",
-                                    mime=_mime,
-                                    use_container_width=True,
-                                    key=f"dl_{_fmt}",
-                                )
-                            else:
-                                st.error(f"Ошибка экспорта: {dl.status_code}")
-                        except Exception as _e:
-                            st.error(str(_e))
-            else:
-                st.button(_label, disabled=True, use_container_width=True, key=f"exp_{_fmt}_dis")
-        if not _has_ocr:
-            st.caption("сначала запусти OCR")
+        _render_export_buttons(doc_id, _has_ocr, key_prefix="exp_left")
         st.stop()
 
     block = next((b for b in all_blocks if b["block_id"] == selected_id), None)
@@ -878,7 +966,6 @@ with col_right:
                             timeout=10,
                         )
                         if _r.status_code == 200:
-                            import time
                             st.session_state[f"preview_bust_{selected_id}"] = int(time.time())
                             fetch_block_preview.clear()
                             fetch_blocks.clear()
@@ -1110,37 +1197,4 @@ with col_right:
         b.get("status") in ("ocr_done", "accepted", "needs_review")
         for b in all_blocks
     )
-    for _fmt2, _label2, _mime2, _ext2 in [
-        ("markdown", "📄 MARKDOWN", "text/markdown",    "md"),
-        ("json",     "🗂 JSON",     "application/json", "json"),
-        ("csv",      "📊 CSV",      "text/csv",         "csv"),
-    ]:
-        if _has_ocr2:
-            if st.button(_label2, use_container_width=True, key=f"exp2_{_fmt2}"):
-                with st.spinner(f"Генерируем {_fmt2}..."):
-                    try:
-                        httpx.post(
-                            f"{BACKEND_URL}/processing/{doc_id}/export?format={_fmt2}",
-                            timeout=60,
-                        )
-                        dl = httpx.get(
-                            f"{BACKEND_URL}/processing/{doc_id}/export-file/{_fmt2}",
-                            timeout=30,
-                        )
-                        if dl.status_code == 200:
-                            st.download_button(
-                                f"⬇ Скачать .{_ext2}",
-                                data=dl.content,
-                                file_name=f"{doc_id[:8]}.{_ext2}",
-                                mime=_mime2,
-                                use_container_width=True,
-                                key=f"dl2_{_fmt2}",
-                            )
-                        else:
-                            st.error(f"Ошибка экспорта: {dl.status_code}")
-                    except Exception as _e:
-                        st.error(str(_e))
-        else:
-            st.button(_label2, disabled=True, use_container_width=True, key=f"exp2_{_fmt2}_dis")
-    if not _has_ocr2:
-        st.caption("сначала запусти OCR")
+    _render_export_buttons(doc_id, _has_ocr2, key_prefix="exp_right")
