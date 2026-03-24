@@ -145,6 +145,8 @@ When `bbox` is in the PATCH payload, `processing.py` re-crops `blocks/{block_id}
 - Добавлен лог при ошибке импорта для отладки
 
 **Текущий приоритет (WIP):**
+- ✅ Фикс статуса моделей — backend корректно читает models.status из памяти
+- **Передача model_choices в OCR endpoint** — фронтенд отправляет выбранную модель при запросе OCR
 - Фронтенд: UI для выбора модели OCR (dropdown choices)
 - Spinner прогресса во время обработки блоков
 - Полный цикл OCR → Markdown в detail-layout режиме
