@@ -171,13 +171,12 @@ async def get_available_models():
     Возвращает список моделей для каждого типа блока.
     available=true если модель загружена / ключ задан.
     """
-    import httpx as _httpx
-
-    # Получаем статус загруженных моделей
+    # Читаем статус моделей напрямую из памяти — без HTTP запроса
     try:
-        r = _httpx.get("http://localhost:8000/health", timeout=3)
-        models_loaded = r.json().get("models_loaded", {})
-    except Exception:
+        from main import models as _models
+        models_loaded = dict(_models.status)
+    except Exception as _e:
+        logger.warning("Не удалось импортировать models из main: %s", _e)
         models_loaded = {}
 
     # Получаем заданные ключи

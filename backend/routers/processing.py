@@ -230,25 +230,37 @@ async def ocr_single_block(doc_id: str, block_id: str,
 
 
 @router.post("/{doc_id}/ocr", summary="Запустить OCR всех блоков")
-async def start_ocr(doc_id: str, background_tasks: BackgroundTasks,
-                    payload: dict = Body(default={})):
+async def start_ocr(doc_id: str, payload: dict = Body(default={})):
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
     if not meta_file.exists():
         raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
 
     meta = json.loads(meta_file.read_text())
-    if meta.get("status") != "layout_done":
+    if meta.get("status") not in ("layout_done", "ocr_done"):
         raise HTTPException(
             status_code=400,
             detail=f"Сначала запусти layout detection. Статус: {meta.get('status')}"
         )
 
-    background_tasks.add_task(_run_ocr, doc_id)
-    return {
-        "doc_id":  doc_id,
-        "status":  "ocr_processing",
-        "message": "OCR запущен в фоне. Проверяй /status",
-    }
+    from main import models
+    from pipeline.ocr_pipeline import OCRPipeline
+    from starlette.concurrency import run_in_threadpool
+
+    model_choices = payload.get("model_choices", {})
+    pipeline = OCRPipeline(models=models, data_dir=DATA_DIR)
+
+    try:
+        stats = await run_in_threadpool(pipeline.process_document, doc_id, model_choices)
+        return {
+            "doc_id":    doc_id,
+            "status":    "ocr_done",
+            "processed": stats.get("processed", 0),
+            "errors":    stats.get("errors", 0),
+            "by_type":   stats.get("by_type", {}),
+        }
+    except Exception as e:
+        logger.error(f"OCR pipeline ошибка ({doc_id}): {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{doc_id}/export", summary="Экспорт результатов")
