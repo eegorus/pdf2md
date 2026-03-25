@@ -10,14 +10,18 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: prms-ollama
+    runtime: nvidia
     ports:
       - "11434:11434"          # Открываем только локально (не наружу!)
     volumes:
       - /home/guiuser/.ollama:/root/.ollama   # Named volume — модели сохраняются между пересозданиями
     environment:
-      - OLLAMA_KEEP_ALIVE=24h       # Держим модель в VRAM 24ч после последнего запроса
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OLLAMA_KEEP_ALIVE=10m        # Освобождаем VRAM через 10 минут простоя
       - OLLAMA_MAX_LOADED_MODELS=1  # Только одна модель в VRAM одновременно
-      - OLLAMA_NUM_PARALLEL=2       # Максимум 2 параллельных запроса к модели
+      - OLLAMA_NUM_PARALLEL=1       # OCR-pipeline строго последовательный — 1 слот достаточно
+      - OLLAMA_FIGURE_MODEL=${OLLAMA_FIGURE_MODEL:-qwen2.5vl:3b}
     deploy:
       resources:
         reservations:

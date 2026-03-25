@@ -19,6 +19,9 @@ from PIL import Image
 
 logger = logging.getLogger("prms.ocr_pipeline")
 
+# Модели, которые не помещаются в VRAM вместе с dots.ocr (>6 GB) — требуют offload
+HEAVY_FIGURE_MODELS = {"qwen2.5vl:7b", "qwen2.5vl:72b"}
+
 
 class OCRPipeline:
     def __init__(self, models, data_dir: str | Path):
@@ -144,24 +147,28 @@ class OCRPipeline:
             if b.get("block_type") in _block_order else 99
         )
 
-        stats = {"processed": 0, "errors": 0, "by_type": {}}
+        stats     = {"processed": 0, "errors": 0, "by_type": {}}
         last_type = None
 
         for i, block in enumerate(blocks_sorted):
             block_type = block.get("block_type", "text")
             image_path = block.get("image_path", "")
 
-            # При переходе к figure — выгрузить dots.ocr из VRAM один раз
+            # При переходе к figure — offload dots.ocr только если модель тяжёлая
             if block_type == "figure" and last_type != "figure":
-                if hasattr(self.models, 'table_model') and self.models.table_model is not None:
-                    import torch
-                    logger.info("Выгружаем dots.ocr из VRAM перед Ollama...")
-                    self.models.table_model.cpu()
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-                    free_gb = (torch.cuda.get_device_properties(0).total_memory
-                               - torch.cuda.memory_allocated()) / 1e9
-                    logger.info(f"VRAM свободно после выгрузки: {free_gb:.1f} GB")
+                figure_model = (model_choices or {}).get("figure",
+                    getattr(self.figure_proc, "model", "qwen2.5vl:3b"))
+                # resolve model_id alias → actual model name
+                if figure_model == "ollama_7b":
+                    figure_model = os.getenv("OLLAMA_FALLBACK_MODEL", "qwen2.5vl:7b")
+                elif figure_model in ("ollama_3b", "ollama"):
+                    figure_model = os.getenv("OLLAMA_FIGURE_MODEL", "qwen2.5vl:3b")
+
+                if figure_model in HEAVY_FIGURE_MODELS:
+                    self._unload_table_model()
+                    logger.info(f"dots.ocr offloaded перед {figure_model}")
+                else:
+                    logger.info(f"dots.ocr остаётся на GPU, {figure_model} не требует offload")
 
             last_type = block_type
 
@@ -227,27 +234,25 @@ class OCRPipeline:
         return stats
 
     def _unload_table_model(self):
-        """Выгружаем dots.ocr из VRAM перед вызовом Ollama."""
-        import torch
-        if self.models.table_model is not None:
-            self.models.table_model.to("cpu")
+        """Выгружаем dots.ocr из VRAM перед вызовом тяжёлой Ollama-модели."""
+        import torch, gc
+        if hasattr(self.models, "table_model") and self.models.table_model is not None:
+            self.models.table_model.cpu()
+            gc.collect()
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-            logger.debug("dots.ocr выгружен на CPU для освобождения VRAM")
+            logger.info(f"VRAM после offload dots.ocr: {torch.cuda.memory_allocated()/1e9:.1f}GB allocated")
 
     def _reload_table_model(self):
-        """Возвращаем dots.ocr на GPU после вызова Ollama."""
+        """Возвращаем dots.ocr на GPU (для будущих сценариев)."""
         import torch
-        if self.models.table_model is not None:
+        if hasattr(self.models, "table_model") and self.models.table_model is not None:
             self.models.table_model.to("cuda")
             logger.debug("dots.ocr возвращён на GPU")
 
     def _process_block(self, image: Image.Image, block_type: str, model_id: str | None = None) -> str:
         logger.debug(f"[_process_block] type={block_type!r} model_id={model_id!r}")
-        """
-        Выбирает модуль и запускает OCR для одного блока.
-        Figure/fallback → выгружаем dots.ocr перед Ollama вызовом.
-        """
+        """Выбирает модуль и запускает OCR для одного блока."""
         import torch
         try:
             # Если явно указана облачная модель — роутим туда
@@ -257,10 +262,7 @@ class OCRPipeline:
             if block_type == "text":
                 if self.text_ocr:
                     return self.text_ocr.recognize(image)
-                self._unload_table_model()
-                result = self.fallback.process(image, "text")
-                self._reload_table_model()
-                return result
+                return self.fallback.process(image, "text")
 
             elif block_type in ("table", "table_simple", "table_complex"):
                 if self.table_rec:
@@ -291,26 +293,20 @@ class OCRPipeline:
                 return self.fallback.process(image, "formula")
 
             elif block_type == "figure":
-                # Ollama требует VRAM — выгружаем dots.ocr
-                self._unload_table_model()
-                result = self.figure_proc.describe(image)
-                self._reload_table_model()
-                return result
+                model_override = None
+                if model_id == "ollama_7b":
+                    import os
+                    model_override = os.getenv("OLLAMA_FALLBACK_MODEL", "qwen2.5vl:7b")
+                return self.figure_proc.describe(image, model_override=model_override)
 
             else:
                 logger.warning(f"Неизвестный тип блока: {block_type}")
-                self._unload_table_model()
-                result = self.fallback.process(image, "text")
-                self._reload_table_model()
-                return result
+                return self.fallback.process(image, "text")
 
         except Exception as e:
             logger.error(f"Ошибка {block_type} модуля: {e}, пробуем fallback")
             torch.cuda.empty_cache()
-            self._unload_table_model()
-            result = self.fallback.process(image, block_type)
-            self._reload_table_model()
-            return result
+            return self.fallback.process(image, block_type)
 
     def _process_cloud(self, image: "Image.Image", block_type: str, model_id: str) -> str:
         """Отправляет блок в облачную модель через settings API-ключи."""

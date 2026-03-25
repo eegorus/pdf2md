@@ -124,10 +124,11 @@ BLOCK_TYPE_MODELS = {
         {"id": "openrouter",   "label": "OpenRouter",               "requires_key": "openrouter"},
     ],
     "figure": [
-        {"id": "ollama",       "label": "Ollama qwen2.5vl (локальный)", "requires": "ollama"},
-        {"id": "gpt4o",        "label": "GPT-4o (облако)",          "requires_key": "openai"},
-        {"id": "claude",       "label": "Claude (облако)",           "requires_key": "anthropic"},
-        {"id": "openrouter",   "label": "OpenRouter",               "requires_key": "openrouter"},
+        {"id": "ollama_3b",    "label": "Ollama qwen2.5vl:3b (быстрый)",  "requires": "ollama"},
+        {"id": "ollama_7b",    "label": "Ollama qwen2.5vl:7b (качество)", "requires": "ollama"},
+        {"id": "gpt4o",        "label": "GPT-4o (облако)",                "requires_key": "openai"},
+        {"id": "claude",       "label": "Claude (облако)",                 "requires_key": "anthropic"},
+        {"id": "openrouter",   "label": "OpenRouter",                     "requires_key": "openrouter"},
     ],
     "table_simple": [
         {"id": "dots_ocr",     "label": "dots.ocr (локальный 🥇)",  "requires": "dots_ocr"},
@@ -157,7 +158,7 @@ BLOCK_TYPE_MODELS = {
 # Дефолтные модели для каждого типа (первая доступная)
 DEFAULT_MODEL = {
     "text":          "easyocr",
-    "figure":        "ollama",
+    "figure":        "ollama_3b",
     "table_simple":  "dots_ocr",
     "table_complex": "dots_ocr",
     "formula":       "texteller",

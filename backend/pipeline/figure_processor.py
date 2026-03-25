@@ -29,7 +29,8 @@ FIGURE_PROMPT = (
 class FigureProcessor:
     def __init__(self):
         self.ollama_url   = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-        self.model        = os.getenv("OLLAMA_FALLBACK_MODEL", "qwen2.5vl:7b")
+        self.model        = os.getenv("OLLAMA_FIGURE_MODEL",
+                              os.getenv("OLLAMA_FALLBACK_MODEL", "qwen2.5vl:3b"))
         self.timeout      = int(os.getenv("OLLAMA_TIMEOUT", "120"))
         logger.info(f"FigureProcessor: {self.model} @ {self.ollama_url}")
 
@@ -39,7 +40,7 @@ class FigureProcessor:
         image.save(buffer, format="PNG")
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    def describe(self, image: Image.Image) -> str:
+    def describe(self, image: Image.Image, model_override: str | None = None) -> str:
         """
         Отправляет изображение в Ollama и получает описание.
 
@@ -51,16 +52,22 @@ class FigureProcessor:
           "stream": false
         }
         """
+        from shared.utils import resize_for_inference
+        image, was_resized = resize_for_inference(image, max_pixels=640*640)
+        if was_resized:
+            logger.debug(f"figure image resized to {image.size} для Ollama")
         image = image.convert("RGB")
         img_b64 = self._image_to_base64(image)
 
+        model = model_override or self.model
         payload = {
-            "model":  self.model,
+            "model":  model,
             "prompt": FIGURE_PROMPT,
             "images": [img_b64],
             "stream": False,
             "options": {
                 "temperature": 0.1,   # Низкая температура = фактичность
+                "num_ctx": 1024,      # Уменьшаем KV-кэш в VRAM (figure не требует длинного контекста)
                 "num_predict": 256,   # Ограничиваем длину описания
             },
         }
