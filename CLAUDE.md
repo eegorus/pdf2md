@@ -53,7 +53,7 @@ User corrections are collected as training pairs → QLoRA fine-tune of Qwen2.5-
 
 | Service   | Port  | Notes |
 |-----------|-------|-------|
-| ollama    | 11434 | Qwen2.5vl:7b, GPU, 24h keep-alive |
+| ollama    | 11434 | Qwen2.5vl:7b (fallback) + 3b (figure), GPU, 10m keep-alive |
 | backend   | 8000  | FastAPI, GPU, ~2 min startup (model loading) |
 | frontend  | 8501  | Streamlit, no GPU |
 | finetune  | —     | Manual launch via `--profile finetune` |
@@ -134,22 +134,91 @@ When `bbox` is in the PATCH payload, `processing.py` re-crops `blocks/{block_id}
 
 `backend/shared/` and `shared/` exist separately — the Dockerfile bind-mounts `./shared` to `/app/shared`. The backend's `backend/shared/schemas.py` is the canonical version actually used at runtime; `shared/schemas.py` at repo root is a lighter copy. Keep them in sync when modifying schemas.
 
+## Session log — 2026-03-25
+
+### ✅ Завершено в этой сессии
+
+**1. Сортировка блоков в экспорте (✅ завершено)**
+- `blocks_to_markdown()`: сортировка по `(page_num, y1, x1)` вместо `block_idx`
+- `POST /blocks`: новые блоки вставляются в правильную позицию в `blocks.json` по визуальному порядку
+- Отредактированные блоки теперь появляются на месте, а не в конце
+
+**2. Инфраструктура Docker (✅ завершено)**
+- `docker-compose.yml`: добавлен `runtime: nvidia` для ollama
+- OLLAMA_KEEP_ALIVE: 24h → 10m (сбережение VRAM при простое)
+- OLLAMA_NUM_PARALLEL: 2 → 1 (OCR-pipeline строго последовательный)
+- Опции: NVIDIA_VISIBLE_DEVICES, NVIDIA_DRIVER_CAPABILITIES
+
+**3. Модели Ollama (✅ завершено)**
+- Скачали `qwen2.5vl:3b` (~2.3 GB) — быстрая обработка фигур
+- Добавлена env var `OLLAMA_FIGURE_MODEL` (дефолт: 3b)
+- `OLLAMA_FALLBACK_MODEL` остаётся на 7b для fallback (text, formula, table)
+- В settings: выбор figure моделей `ollama_3b` (быстро) и `ollama_7b` (качество)
+
+**4. Условный VRAM offload (✅ завершено)**
+- `HEAVY_FIGURE_MODELS` constant: offload dots.ocr только для 7b/72b модели
+- Для 3b offload не требуется (9.4 GB < 24 GB RTX 4090)
+- Логирование: когда offload нужен и когда нет
+- Восстановлены методы `_unload_table_model()` / `_reload_table_model()` для будущего расширения
+
+**5. Figure embedding в Markdown (✅ завершено)**
+- Картинки фигур: resize до max 1200px, encode как base64 PNG
+- Формат: `![alt](data:image/png;base64,...)`
+- Alt-текст очищен: убраны переносы, кавычки, скобки
+- Типичный кроп 500 KB → 80-120 KB после resize
+
+**6. Горизонтальный скроллинг таблиц (✅ завершено)**
+- HTML-таблицы обёрнуты в `<div style="overflow-x: auto">`
+- `table_recognizer.py`: добавлены inline-стили `border-collapse: collapse; min-width: 600px`
+- Скролл показывается только когда таблица шире viewport
+
+### Текущий статус
+**Экспорт в Markdown полнофункционален:**
+- ✅ Текст, таблицы (с горизонтальным скроллом), формулы, картинки (base64)
+- ✅ Правильный визуальный порядок блоков
+- ✅ Оптимизирован размер файла
+- ✅ Работает в Obsidian и других Markdown-просмотрщиках
+
 ## Session log — 2026-03-24
 
-### Статус моделей
+### Сделано
 
-**Фикс: убран circular HTTP запрос в `/available-models`**
-- Было: `GET /health` → HTTP `localhost:8000/health` (циклический запрос)
-- Стало: прямой импорт `from main import models` + чтение `models.status` из синглтона
-- Все локальные модели теперь корректно показываются как ✅ doступные (easyocr, dots_ocr, texteller, ollama)
-- Добавлен лог при ошибке импорта для отладки
+**1. Статус моделей (✅ завершено)**
+- Убран circular HTTP запрос в `/available-models` → теперь прямой импорт моделей из синглтона
+- Все локальные модели показываются как ✅ доступные (easyocr, dots_ocr, texteller, ollama)
 
-**Текущий приоритет (WIP):**
-- ✅ Фикс статуса моделей — backend корректно читает models.status из памяти
-- **Передача model_choices в OCR endpoint** — фронтенд отправляет выбранную модель при запросе OCR
-- Фронтенд: UI для выбора модели OCR (dropdown choices)
-- Spinner прогресса во время обработки блоков
-- Полный цикл OCR → Markdown в detail-layout режиме
+**2. Экспорт в Markdown/JSON/CSV (✅ завершено)**
+- Убрано дублирование кода экспорта — единая функция `_render_export_buttons()`
+- Байты кэшируются в `session_state` → download_button не пропадает при rerun
+- Использование `st_canvas` для drawing без кнопки подтверждения
+- Сброс кэша при смене документа
+
+**3. OCR — Polling архитектура (✅ завершено)**
+- Backend: добавлены `POST /ocr` (запускает в фоне, возвращает сразу) и `GET /{doc_id}/ocr-status`
+- Хранилище `_ocr_status: dict` в памяти с полями {status, processed, total, errors, error_msg}
+- Callback `on_progress()` обновляет статус каждые 10 блоков
+- Frontend: вместо `timeout=600` с spinner, теперь polling блок каждые 3 сек с progress-bar
+- Сортировка блоков по типу (text/table/formula → figure) для оптимальной работы с VRAM
+
+**4. VRAM management (✅ завершено)**
+- Выгрузка dots.ocr на CPU один раз перед первым figure-блоком
+- Более подробное логирование свободной VRAM после выгрузки
+- `hasattr()` проверка перед доступом к `table_model`
+
+**5. Markdown экспорт (✅ завершено)**
+- HTML wrapper `<html><body>` теперь удаляется из markdown — regex вырезает только `<table>...</table>`
+- `max_new_tokens` увеличен с 2048 до 8192 для широких таблиц (10+ колонок)
+
+**6. Viewer (✅ завершено)**
+- Viewer самостоятельно показывает список всех документов с кнопками "Открыть"
+- Список открывается если `viewer_doc_id` не установлен (вместо ошибки "выберите в Upload")
+- Кнопка "↩ Сменить документ" в левой панели для быстрого переключения
+- Документы фильтруются: открывать можно только при статусе `layout_done` или `ocr_done`
+
+**7. Upload — обработка повторного /start (✅ завершено)**
+- `POST /start` теперь возвращает 400 с `detail="layout_already_done"` при уже обработанных документах
+- Frontend ловит эту ошибку и сразу открывает Viewer через `st.switch_page()`
+- Пользователь может перетестировать тот же документ без повторной загрузки
 
 ## Session log — 2026-03-23
 
@@ -207,7 +276,8 @@ Defined in `.env.example`. Key ones:
 
 ```
 OLLAMA_BASE_URL=http://ollama:11434
-OLLAMA_FALLBACK_MODEL=qwen2.5vl:7b
+OLLAMA_FALLBACK_MODEL=qwen2.5vl:7b          # fallback для text/formula/table
+OLLAMA_FIGURE_MODEL=qwen2.5vl:3b            # figure обработка (быстро)
 PDF_DPI=300
 BLOCK_CONFIDENCE_THRESHOLD=0.3
 MIN_PAIRS_FOR_FINETUNE=50

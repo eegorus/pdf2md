@@ -92,7 +92,7 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
     - Блоки сгруппированы по страницам
     - Таблицы обёрнуты в HTML блок (рендерится в большинстве MD просмотрщиков)
     - Формулы в $$...$$
-    - Рисунки как подписи
+    - Рисунки как base64-embedded PNG
     """
     if not blocks:
         return "# Документ пустой\n"
@@ -100,7 +100,14 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
     lines = []
     current_page = None
 
-    for block in sorted(blocks, key=lambda b: (b.get("page_num", 0), b.get("block_idx", 0))):
+    for block in sorted(
+        blocks,
+        key=lambda b: (
+            b.get("page_num", 0),
+            b.get("bbox", [0, 0, 0, 0])[1],   # y1 — верхний край блока
+            b.get("bbox", [0, 0, 0, 0])[0],   # x1 — левый край (тай-брейкер)
+        )
+    ):
         page_num   = block.get("page_num", 0)
         block_type = block.get("block_type", "text")
         output     = block.get("output") or ""
@@ -118,14 +125,56 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
             lines.append(output + "\n")
 
         elif block_type in {"table", "table_simple", "table_complex"}:
-            # HTML таблица в markdown
-            lines.append("\n" + output + "\n")
+            # Вырезаем только <table>...</table> — убираем <html><body> враппер
+            import re
+            table_match = re.search(
+                r'(<table[\s\S]*?</table>)',
+                output,
+                re.IGNORECASE | re.DOTALL
+            )
+            if table_match:
+                clean = table_match.group(1)
+                wrapped = (
+                    '<div style="overflow-x: auto; -webkit-overflow-scrolling: touch;">\n'
+                    + clean
+                    + "\n</div>"
+                )
+                lines.append("\n" + wrapped + "\n")
+            else:
+                lines.append("\n" + output + "\n")
 
         elif block_type == "formula":
             lines.append(f"\n$$\n{output}\n$$\n")
 
         elif block_type == "figure":
-            lines.append(f"\n*[Рисунок: {output}]*\n")
+            import base64 as _b64mod
+            import io as _io
+            from PIL import Image as _PIL
+
+            image_path = block.get("image_path", "")
+
+            # Чистим alt: убираем переносы, кавычки и скобки — они ломают Markdown
+            raw_alt = (output or "").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+            raw_alt = raw_alt.replace('"', "'").replace("[", "(").replace("]", ")")
+            alt = raw_alt.strip()[:200]
+
+            if image_path and Path(image_path).exists():
+                try:
+                    img = _PIL.open(image_path).convert("RGB")
+                    w, h = img.size
+                    if max(w, h) > 1200:
+                        scale = 1200 / max(w, h)
+                        img = img.resize((int(w * scale), int(h * scale)), _PIL.LANCZOS)
+                    buf = _io.BytesIO()
+                    img.save(buf, format="PNG", optimize=True)
+                    b64str = _b64mod.b64encode(buf.getvalue()).decode("ascii")
+                    md_line = "![" + alt + "](data:image/png;base64," + b64str + ")"
+                    lines.append(md_line)
+                except Exception as _e:
+                    logger.warning(f"figure embed failed {image_path}: {_e}")
+                    lines.append("> 🖼️ " + alt if alt else "> 🖼️ Figure")
+            else:
+                lines.append("> 🖼️ " + alt if alt else "> 🖼️ Figure (no image)")
 
         else:
             lines.append(output + "\n")

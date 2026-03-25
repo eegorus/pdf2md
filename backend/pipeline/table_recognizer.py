@@ -151,8 +151,9 @@ class TableRecognizer:
             skip_special_tokens=True,
         )[0]
 
-        # Очищаем результат
+        # Очищаем результат и добавляем стили
         html = self._clean_html(result.strip())
+        html = self._add_table_styles(html)
         return html
 
     def recognize_file(self, image_path: str | Path) -> str:
@@ -170,6 +171,18 @@ class TableRecognizer:
         # Нормализуем пробелы
         text = re.sub(r"\s+", " ", text).strip()
         return text
+
+    @staticmethod
+    def _add_table_styles(html: str) -> str:
+        """Добавляет inline-стили к <table> для корректного скроллинга в Obsidian."""
+        if "border-collapse" not in html:
+            html = re.sub(
+                r"<table(?![^>]*style)",
+                '<table style="border-collapse: collapse; min-width: 600px;" border="1"',
+                html,
+                count=1,
+            )
+        return html
 
     @staticmethod
     def _clean_html(raw: str) -> str:
