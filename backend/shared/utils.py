@@ -100,7 +100,14 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
     lines = []
     current_page = None
 
-    for block in sorted(blocks, key=lambda b: (b.get("page_num", 0), b.get("block_idx", 0))):
+    for block in sorted(
+        blocks,
+        key=lambda b: (
+            b.get("page_num", 0),
+            b.get("bbox", [0, 0, 0, 0])[1],   # y1 — верхний край блока
+            b.get("bbox", [0, 0, 0, 0])[0],   # x1 — левый край (тай-брейкер)
+        )
+    ):
         page_num   = block.get("page_num", 0)
         block_type = block.get("block_type", "text")
         output     = block.get("output") or ""

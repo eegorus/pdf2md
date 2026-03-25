@@ -533,7 +533,18 @@ async def add_block(doc_id: str, payload: dict = Body(...)):
     except Exception as e:
         logger.error(f"Ошибка создания кропа для {block_id}: {e}")
 
-    blocks.append(new_block)
+    new_page = new_block.get("page_num", 0)
+    new_y1   = new_block.get("bbox", [0, 0, 0, 0])[1]
+
+    insert_idx = len(blocks)  # дефолт — в конец
+    for i, b in enumerate(blocks):
+        b_page = b.get("page_num", 0)
+        b_y1   = b.get("bbox", [0, 0, 0, 0])[1]
+        if (b_page, b_y1) > (new_page, new_y1):
+            insert_idx = i
+            break
+
+    blocks.insert(insert_idx, new_block)
     blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
     if meta_file.exists():
