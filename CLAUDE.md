@@ -134,6 +134,67 @@ When `bbox` is in the PATCH payload, `processing.py` re-crops `blocks/{block_id}
 
 `backend/shared/` and `shared/` exist separately — the Dockerfile bind-mounts `./shared` to `/app/shared`. The backend's `backend/shared/schemas.py` is the canonical version actually used at runtime; `shared/schemas.py` at repo root is a lighter copy. Keep them in sync when modifying schemas.
 
+## Session log — 2026-03-26
+
+### ✅ Markdown Viewer (первая версия) — завершено
+
+**Новая страница `frontend/pages/4_MarkdownViewer.py`:**
+- Список документов с фильтром по статусу `ocr_done`
+- Три режима: 👁 Просмотр (рендер markdown), ✏️ Редактор (text_area), ↕️ Split (side-by-side)
+- Кэширование контента в `session_state` с ключами `md_edit_{doc_id}` и `md_dirty_{doc_id}`
+- Отслеживание изменений: кнопка Сохранить активна только если `is_dirty=True`
+- Кнопки: Сохранить (primary), Сбросить (reset), Скачать (download)
+- Auto-generate экспорта если `export.md` не существует
+
+**Backend PATCH endpoint:**
+- Добавлен `PATCH /{doc_id}/export-file/markdown` в `backend/routers/processing.py` (lines 408–431)
+- Создаёт `.bak` перед перезаписью, возвращает `{"saved": true, "doc_id": ..., "size": ...}`
+- Валидация: контент не может быть пустым, файл должен существовать
+
+**Frontend — переход из Viewer:**
+- Кнопка "📄 Открыть в MD Viewer" в `_render_export_buttons()` (2_Viewer.py, lines 133–135)
+- Устанавливает `md_viewer_doc_id` в session_state и переходит на новую страницу
+
+**Фикс**:
+- `fetch_documents()` вызывает `/documents/` (с trailing slash) — httpx не следит редирект 307
+
+### Текущий статус
+- ✅ Markdown viewer полностью функционален на фронтенде
+- ✅ Сохранение отредактированного markdown на бэкенде
+- ✅ Навигация между Viewer и MD Viewer
+- Протестировано с 3 документами статуса `ocr_done`
+
+---
+
+### ❌ Попытка: Canvas flash fix — удаление selection из hash (не сработало)
+
+**Проблема**: Viewer canvas периодически пропадает/сворачивается (~50% случаев) при клике на блок, добавлении нового блока, перелистывании, редактировании.
+
+**Гипотеза**: `streamlit_image_coordinates` коллапсит при перезагрузке изображения браузером. Каждый выбор блока вызывает `viewer_selected_block` change → `draw_blocks_on_image()` возвращает новый PIL object → Streamlit генерирует новый URL → браузер перезагружает изображение → **flash ~50% случаев**.
+
+**Попытанный fix** (lines 636–658 в 2_Viewer.py):
+- Убрать `viewer_selected_block` из `_annot_hash` (оставить только `show_types` + блоки на странице)
+- Передать `selected_id=None` в `draw_blocks_on_image()` (без жёлтого контура на выбранном блоке)
+- Selection feedback остаётся через `▶` префикс в кнопке блока + детали в правой панели
+- PIL object в session_state должен был оставаться стабильным → тот же Streamlit URL → нет browser reload
+
+**Результат**: Не сработало. Canvas всё ещё коллапсит при клике на блок через buttons below или image.
+
+**Возможные причины**:
+1. `streamlit_image_coordinates` UI component сам перезагружает браузер при любом rerun
+2. Хеш всё ещё меняется из-за другого фактора (и check_session_state?)
+3. PIL object в session_state не сохраняется между reruns
+4. Симптом: перезагрузка происходит ещё до rerun (браузер теряет focus на canvas)
+
+**Следующие идеи для расследования**:
+- Переключиться с `streamlit_image_coordinates` на `st.image()` + custom JS click handler (требует обработки координат вручную)
+- Профилировать через браузер DevTools когда happens canvas collapse — есть ли XHR rerun?
+- Проверить есть ли в 2_Viewer.py безусловный `st.rerun()` который срабатывает после block click
+- Кэшировать `annotated` не в session_state а в глобальную переменную (обход rerun-очистки?)
+- Попробовать использовать `@st.experimental_fragment()` для изоляции canvas от остального UI
+
+---
+
 ## Session log — 2026-03-25
 
 ### ✅ Завершено в этой сессии

@@ -130,6 +130,10 @@ def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
     if not has_ocr:
         st.caption("сначала запусти OCR")
 
+    if st.button("📄 Открыть в MD Viewer", use_container_width=True, key=f"{key_prefix}_go_md"):
+        st.session_state["md_viewer_doc_id"] = doc_id
+        st.switch_page("pages/4_MarkdownViewer.py")
+
 
 def draw_blocks_on_image(
     image: Image.Image,

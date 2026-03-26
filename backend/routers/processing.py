@@ -406,6 +406,27 @@ async def download_export(doc_id: str, fmt: str):
     )
 
 
+@router.patch("/{doc_id}/export-file/markdown", summary="Сохранить отредактированный markdown")
+async def save_markdown(doc_id: str, payload: dict = Body(default={})):
+    """Перезаписывает export.md отредактированным содержимым из фронтенда."""
+    import shutil
+
+    content = payload.get("content", "")
+    if not content:
+        raise HTTPException(status_code=400, detail="content не может быть пустым")
+
+    md_file = DATA_DIR / "results" / doc_id / "export.md"
+    if not md_file.exists():
+        raise HTTPException(status_code=404, detail=f"export.md для {doc_id} не найден")
+
+    backup = DATA_DIR / "results" / doc_id / "export.md.bak"
+    shutil.copy2(str(md_file), str(backup))
+
+    md_file.write_text(content, encoding="utf-8")
+    logger.info(f"export.md сохранён для {doc_id}, {len(content)} символов")
+    return {"saved": True, "doc_id": doc_id, "size": len(content)}
+
+
 # ─── PATCH: обновить статус/output конкретного блока ───────────────────────
 @router.patch("/{doc_id}/blocks/{block_id}")
 async def patch_block(doc_id: str, block_id: str, payload: dict = Body(...)):
