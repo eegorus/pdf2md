@@ -91,7 +91,13 @@ class TableRecognizer:
         Если модель вернула некорректный HTML — возвращаем
         то что есть, фронтенд разберётся.
         """
+        import time
+        t0 = time.perf_counter()
+
         image = image.convert("RGB")
+        w, h = image.size
+        mpx = w * h / 1_000_000
+        logger.info(f"[PROFILE] image size={w}x{h} ({mpx:.2f} MP)")
 
         # Масштабируем большие таблицы — главная причина OOM
         # dots.ocr пытается выделить 6-12 ГБ на таблицы >2MP
@@ -99,8 +105,10 @@ class TableRecognizer:
         from shared.utils import resize_for_inference
         image, was_resized = resize_for_inference(image, max_pixels=2_000_000)
         if was_resized:
-            logger.debug(f"Таблица масштабирована для инференса")
+            w2, h2 = image.size
+            logger.info(f"[PROFILE] resized → {w2}x{h2} ({w2*h2/1_000_000:.2f} MP)")
 
+        t_resize = time.perf_counter()
 
         # Формируем chat-сообщение в формате Qwen2-VL
         messages = [
@@ -132,6 +140,10 @@ class TableRecognizer:
             padding=True,
         ).to("cuda")
 
+        t_preprocess = time.perf_counter()
+        input_tokens = inputs["input_ids"].shape[1]
+        logger.info(f"[PROFILE] preprocess={t_preprocess - t_resize:.2f}s  input_tokens={input_tokens}")
+
         with torch.no_grad():
             output_ids = self.model.generate(
                 **inputs,
@@ -143,9 +155,18 @@ class TableRecognizer:
                 pad_token_id=self.processor.tokenizer.eos_token_id,
             )
 
+        t_generate = time.perf_counter()
+
         # Декодируем только новые токены (не входной prompt)
         input_len  = inputs["input_ids"].shape[1]
         new_tokens = output_ids[:, input_len:]
+        output_token_count = new_tokens.shape[1]
+        logger.info(
+            f"[PROFILE] generate={t_generate - t_preprocess:.2f}s  "
+            f"output_tokens={output_token_count}  "
+            f"tok/s={output_token_count / (t_generate - t_preprocess):.1f}"
+        )
+
         result     = self.processor.batch_decode(
             new_tokens,
             skip_special_tokens=True,
@@ -154,6 +175,16 @@ class TableRecognizer:
         # Очищаем результат и добавляем стили
         html = self._clean_html(result.strip())
         html = self._add_table_styles(html)
+
+        t_end = time.perf_counter()
+        logger.info(
+            f"[PROFILE] total={t_end - t0:.2f}s  "
+            f"(resize={t_resize - t0:.2f}s  "
+            f"preprocess={t_preprocess - t_resize:.2f}s  "
+            f"generate={t_generate - t_preprocess:.2f}s  "
+            f"decode={t_end - t_generate:.2f}s)"
+        )
+
         return html
 
     def recognize_file(self, image_path: str | Path) -> str:

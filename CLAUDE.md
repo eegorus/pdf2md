@@ -134,6 +134,82 @@ When `bbox` is in the PATCH payload, `processing.py` re-crops `blocks/{block_id}
 
 `backend/shared/` and `shared/` exist separately — the Dockerfile bind-mounts `./shared` to `/app/shared`. The backend's `backend/shared/schemas.py` is the canonical version actually used at runtime; `shared/schemas.py` at repo root is a lighter copy. Keep them in sync when modifying schemas.
 
+## Session log — 2026-03-30
+
+### 🔍 Профилирование dots.ocr + попытки ускорения
+
+**Встроенное профилирование (добавлено в `table_recognizer.py`):**
+- `image size` → размер входящей таблицы (MP)
+- `resize` → время масштабирования до 2MP (~0.04s)
+- `preprocess` → подготовка изображения + токенизация для vision encoder (~0.19s)
+- `generate` → основная генерация HTML (`model.generate()`) — **УЗКОЕ МЕСТО**
+- `decode` → декодирование токенов (~0.00s)
+
+**Профиль на реальной сложной таблице (3.13 MP исходная):**
+```
+[PROFILE] image size=2500x1252 (3.13 MP)
+[PROFILE] resized → 1998x1000 (2.00 MP)
+[PROFILE] preprocess=0.19s  input_tokens=2616
+[PROFILE] generate=59.27s  output_tokens=2499  tok/s=42.2
+[PROFILE] total=59.51s
+```
+
+**Диагноз:**
+- Vision encoder (preprocess): 0.3% времени ✓
+- Decode loop (generate): 99.7% времени ← УЗКОЕ МЕСТО
+- Скорость 42.2 tok/s — медленно для RTX 4090 (ожидается 100-200+ tok/s)
+- Вывод: GPU недоиспользован (~40-50% утилизация) в LLM decode
+
+---
+
+### ❌ Попытка: torch.compile(model)
+
+**Гипотеза:** компиляция forward-pass даст 15-25% ускорение на decode.
+
+**Реализация:**
+```python
+models.table_model = torch.compile(
+    models.table_model,
+    mode="reduce-overhead",
+    fullgraph=False,
+)
+```
+
+**Результат:** `TypeError: DotsOCRForCausalLM does not support len()`
+- `torch.compile()` оборачивает модель в `OptimizedModule`
+- Где-то внутри dots.ocr вызывается `len(model)` — обёртка это не поддерживает
+- Это известная проблема из 2026-03-27; в той сессии попытка `torch.compile(model.forward)` тоже не была протестирована до отката
+
+**Вывод:** torch.compile несовместим с текущей архитектурой DotsOCR.
+
+---
+
+### ❌ Попытка убрана: img2table с gpu=False
+
+**Из раздела "Что стоит попробовать" в 2026-03-27 убрана как бесполезная:**
+- img2table предназначена для таблиц с явными линиями (simple tables)
+- Объединённые ячейки, многоуровневые заголовки, таблицы без рамок — именно то, где img2table плохо работает
+- dots.ocr уже используется для table_complex, и он справляется хорошо
+- "Исправление" `gpu=False` от 2026-03-27 было предложено лишь как way to try, но реальной пользы не даст для целевого use case
+
+**Оставлены как потенциальные:**
+- INT4 квантизация (2-3× выигрыш, но риск деградации качества)
+- vLLM + PagedAttention (3-5× выигрыш, но сложная интеграция)
+
+---
+
+### Текущий статус
+- ✅ Профилирование добавлено в `backend/pipeline/table_recognizer.py` для будущих оптимизаций
+- ✅ Узкое место чётко идентифицировано: LLM decode (not vision encoder)
+- ❌ torch.compile несовместим с DotsOCR (len() issue)
+- ❌ img2table не имеет смысла для сложных таблиц
+
+**Дальнейшие работы:**
+- Закрыть тему ускорения dots.ocr (текущие 60 сек на сложную таблицу приемлемо)
+- Сосредоточиться на приоритет 1: UI выбора модели в Viewer
+
+---
+
 ## Session log — 2026-03-27
 
 ### 🔬 Диагностика: dots.ocr + промпты и attention механизмы
@@ -207,11 +283,13 @@ When `bbox` is in the PATCH payload, `processing.py` re-crops `blocks/{block_id}
 - Метрики: простая таблица ~7-10 сек, сложная ~70 сек
 - `attn_implementation="sdpa"` в main.py остался (из 2026-03-26)
 
-**Что стоит попробовать в следующий раз:**
-- `img2table gpu=False` — простой safe fix, не ломает ничего
-- `torch.compile(model.forward)` — компилирует только forward, не оборачивает модель; нет `len()` проблемы
-- Пропатчить `vision_config.attn_implementation` → `sdpa` в config.json (проверить качество на реальных таблицах)
-- Рассмотреть INT4 квантизацию — потенциально 2-3× ускорение, но риск деградации качества
+**Что попробовано в 2026-03-30:**
+- `torch.compile(model)` — **не работает**: DotsOCRForCausalLM не поддерживает `len()`, вызывается внутри wrapper (коммит a9c5ea6 откачен)
+- `img2table gpu=False` — **убрано**: img2table для simple tables, не подходит для table_complex с объединёнными ячейками
+
+**Потенциальные подходы (не приоритет):**
+- INT4 квантизация — 2-3× выигрыш, но риск деградации качества
+- vLLM + PagedAttention — 3-5× выигрыш, но сложная интеграция
 
 ---
 
