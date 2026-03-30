@@ -134,6 +134,87 @@ When `bbox` is in the PATCH payload, `processing.py` re-crops `blocks/{block_id}
 
 `backend/shared/` and `shared/` exist separately — the Dockerfile bind-mounts `./shared` to `/app/shared`. The backend's `backend/shared/schemas.py` is the canonical version actually used at runtime; `shared/schemas.py` at repo root is a lighter copy. Keep them in sync when modifying schemas.
 
+## Session log — 2026-03-27
+
+### 🔬 Диагностика: dots.ocr + промпты и attention механизмы
+
+**Текущие характеристики** (после отката на коммит a9c5ea6):
+- Маленькие таблицы (~0.9 MP, ~500 токенов): **10-10.1 сек** (stable)
+- Большие таблицы (~3.5 MP, ~4000-8000 токенов): **~70 сек** (линейно от выходных токенов)
+- Текущий атентион: `eager` (медленнейший из доступных)
+
+**1. Markdown промпт для dots.ocr — не работает**
+- Модель обучена только на HTML output
+- Системный промпт с инструкцией "convert to Markdown" игнорируется
+- Она всё равно возвращает HTML
+- **Вывод**: это архитектурное ограничение модели, не обходится промптом
+
+**2. "flash attention not available!" — объяснение**
+- Это логирование из самой модели dots.ocr vision encoder
+- Происходит когда config.json содержит `vision_config.attn_implementation="flash_attention_2"` (жёстко захардкодировано), но flash-attn библиотека не установлена
+- Модель fallback-ит на `eager` внутри себя
+- **Текущее исправление**: пропатчить config.json пазже→ SWA fallback на eager, хотя мы установили sdpa
+
+**3. SDPA vs Eager — ограничение SWA (Sliding Window Attention)**
+- Переключили `attn_implementation="eager"` → `"sdpa"`
+- SDPA — встроенная в PyTorch 2.x оптимизированная реализация attention (15-20% быстрее eager)
+- **Но**: LLM decoder использует SWA (Sliding Window Attention) для эффективности
+- SDPA не поддерживает SWA → transformer автоматически fallback-ит на `eager` для LLM, несмотря на наше указание `sdpa`
+- Vision encoder: SDPA работает ✓
+- LLM decoder (основная генерация): `eager` ✗ (из-за SWA)
+- **Тест**: 10.1 сек (eager+eager) → 9.9 сек (sdpa+eager fallback) = **−1%**
+
+**Реальные ускорители остаются:**
+- `torch.compile(model.forward)` — 20-30% на токен (не пробовалась после 2026-03-26)
+- vllm + PagedAttention — 3-5× выигрыш, но нужна интеграция (есть experimental support в dots.ocr)
+- INT4 квантизация — 2-3× выигрыш, риск деградации качества
+
+---
+
+### ❌ Попытка ускорения dots.ocr — полный откат
+
+**Цель**: ускорить OCR таблиц (текущие метрики: простая ~7-10 сек, сложная ~70 сек).
+
+**Что пробовали и почему не сработало:**
+
+**1. Flash Attention 2**
+- Нет `nvcc` в контейнере → нельзя скомпилировать `flash-attn` из исходников
+- Pre-built wheels есть только до PyTorch 2.5, у нас PyTorch 2.10 → нет подходящего wheel
+- **Итог**: установить невозможно без пересборки Docker-образа с CUDA toolkit
+
+**2. bfloat16 + SDPA — уже были**
+- При диагностике оказалось, что `torch_dtype=torch.bfloat16` и `attn_implementation="sdpa"` уже стоят в `main.py` с прошлой сессии (2026-03-26)
+- Никакого дополнительного выигрыша не было
+
+**3. config.json dots.ocr — vision_config.attn_implementation**
+- Обнаружено: `vision_config.attn_implementation = "flash_attention_2"` в config.json модели
+- Vision encoder при старте выдавал 27 × `"flash attention not available! fallback to eager"` — т.е. реально использовал `eager`, а не `sdpa`
+- Пропатчили config.json → сообщения исчезли, но нового предупреждения добавилось: `"Sliding Window Attention is enabled but not implemented for sdpa"` в LLM декодере
+- **Итог**: не тестировалось до отката — неизвестно, дало ли реальный прирост или ухудшило качество
+
+**4. torch.compile(model)** — сломал dots.ocr
+- `torch.compile(model)` создаёт `OptimizedModule` wrapper
+- При вызове `model.generate()` где-то внутри dots.ocr вызывается `len(model)` → `TypeError: DotsOCRForCausalLM does not support len()`
+- Попытка `torch.compile(model.forward)` вместо всей модели — не тестировалась до отката
+
+**5. img2table EasyOCR OOM**
+- При вызове img2table fast-path: `CUDA out of memory. Tried to allocate 790 MiB`
+- img2table инициализирует EasyOCR без `gpu=False` → хочет запуститься на GPU, где уже нет места (dots.ocr занимает ~6 ГБ)
+- Исправление: `Img2EasyOCR(lang=["ru", "en"], kw={"gpu": False})` — но не проверено в prod до отката
+
+**Текущее состояние после отката (коммит a9c5ea6)**
+- dots.ocr: `eager` attention, без torch.compile, без flash-attn
+- Метрики: простая таблица ~7-10 сек, сложная ~70 сек
+- `attn_implementation="sdpa"` в main.py остался (из 2026-03-26)
+
+**Что стоит попробовать в следующий раз:**
+- `img2table gpu=False` — простой safe fix, не ломает ничего
+- `torch.compile(model.forward)` — компилирует только forward, не оборачивает модель; нет `len()` проблемы
+- Пропатчить `vision_config.attn_implementation` → `sdpa` в config.json (проверить качество на реальных таблицах)
+- Рассмотреть INT4 квантизацию — потенциально 2-3× ускорение, но риск деградации качества
+
+---
+
 ## Session log — 2026-03-26
 
 ### ✅ Markdown Viewer (первая версия) — завершено

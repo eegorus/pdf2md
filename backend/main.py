@@ -147,7 +147,7 @@ async def lifespan(app: FastAPI):
         models.table_model = AutoModelForCausalLM.from_pretrained(
             dots_path,
             torch_dtype=torch.bfloat16,
-            attn_implementation="eager",  # без flash-attn — не нужна компиляция
+            attn_implementation="sdpa",  # PyTorch 2.x встроенная оптимизация, ~15-20% быстрее чем eager
             trust_remote_code=True,
             device_map="cuda",
         )
