@@ -281,8 +281,8 @@ class OCRPipeline:
                         except Exception as retry_e:
                             logger.error(f"Retry таблицы не помог: {retry_e}")
                             return "[table: requires manual review]"
-                logger.warning("dots.ocr недоступен - таблица помечена для ревью")
-                return "[table: requires manual review]"
+                logger.warning("dots.ocr недоступен — fallback на Ollama для таблицы")
+                return self.fallback.process(image, "table")
 
             elif block_type == "formula":
                 if self.formula_ocr:

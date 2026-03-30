@@ -198,15 +198,31 @@ models.table_model = torch.compile(
 
 ---
 
+### 🚧 WIP: Fallback Ollama для таблиц (HTML output)
+
+**Проблема:** Qwen2.5vl:7b (Ollama fallback) выдаёт plain text вместо `<table>` при падении dots.ocr
+
+**Решение (реализовано, ожидает тестирования):**
+1. `ocr_pipeline.py` (линии 284-285): вместо `[table: requires manual review]` → `self.fallback.process(image, "table")`
+2. `fallback_api.py` промпт для таблиц усилен:
+   - Явно требует `<table>`, `<tr>`, `<td>`, `colspan/rowspan`
+   - Требует начинать с `<table` и заканчивать `</table>`
+   - Запрещает markdown-блоки
+3. `num_predict`: 1024 → **4096 токенов для таблиц** (сложные таблицы требуют больше)
+4. Постпроцессинг: результат прогоняется через `TableRecognizer._clean_html()` + `_add_table_styles()` — тот же постпроцессинг что у dots.ocr
+
+**Что тестировать завтра:**
+- [ ] Таблица с явно выбранной Ollama 7b в UI должна вернуть `<table>` (не plain text)
+- [ ] Простая таблица (без объединённых ячеек)
+- [ ] Сложная таблица (объединённые ячейки, многоуровневые заголовки)
+- [ ] Убедиться что результат парсится в DataFrame без ошибок
+
 ### Текущий статус
-- ✅ Профилирование добавлено в `backend/pipeline/table_recognizer.py` для будущих оптимизаций
-- ✅ Узкое место чётко идентифицировано: LLM decode (not vision encoder)
+- ✅ Профилирование добавлено в `backend/pipeline/table_recognizer.py`
+- ✅ Узкое место идентифицировано: LLM decode (99.7% времени)
+- ✅ Fallback для таблиц через Ollama реализован (готов к тестированию)
 - ❌ torch.compile несовместим с DotsOCR (len() issue)
 - ❌ img2table не имеет смысла для сложных таблиц
-
-**Дальнейшие работы:**
-- Закрыть тему ускорения dots.ocr (текущие 60 сек на сложную таблицу приемлемо)
-- Сосредоточиться на приоритет 1: UI выбора модели в Viewer
 
 ---
 

@@ -29,8 +29,10 @@ PROMPTS = {
     "table": (
         "Convert this table image to HTML format. "
         "Use <table>, <tr>, <th>, <td> tags. "
-        "Preserve all cell content and structure. "
-        "Return only the HTML, no explanations."
+        "Preserve all cell content, merged cells (use colspan/rowspan attributes), "
+        "and multi-level headers exactly as shown. "
+        "Start your response with <table and end with </table>. "
+        "Return only the HTML table, no explanations, no markdown code blocks."
     ),
     "formula": (
         "Convert this mathematical formula to LaTeX. "
@@ -67,6 +69,7 @@ class FallbackAPI:
         prompt  = PROMPTS.get(block_type, PROMPTS["text"])
         img_b64 = self._to_base64(image)
 
+        num_predict = 4096 if block_type == "table" else 1024
         payload = {
             "model":  self.model,
             "prompt": prompt,
@@ -74,7 +77,7 @@ class FallbackAPI:
             "stream": False,
             "options": {
                 "temperature": 0.05,
-                "num_predict": 1024,
+                "num_predict": num_predict,
             },
         }
 
@@ -85,7 +88,12 @@ class FallbackAPI:
                     json=payload,
                 )
                 resp.raise_for_status()
-                return resp.json().get("response", "").strip()
+                result = resp.json().get("response", "").strip()
+                if block_type == "table":
+                    from pipeline.table_recognizer import TableRecognizer
+                    result = TableRecognizer._clean_html(result)
+                    result = TableRecognizer._add_table_styles(result)
+                return result
 
         except httpx.TimeoutException:
             logger.error(f"Fallback timeout ({self.timeout}s) для {block_type}")
