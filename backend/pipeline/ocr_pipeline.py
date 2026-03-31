@@ -265,6 +265,11 @@ class OCRPipeline:
                 return self.fallback.process(image, "text")
 
             elif block_type in ("table", "table_simple", "table_complex"):
+                # Если явно выбран Ollama fallback — используем его
+                if model_id == "ollama_7b":
+                    logger.info(f"Использую Ollama fallback для таблицы (явный выбор)")
+                    return self.fallback.process(image, "table")
+
                 if self.table_rec:
                     try:
                         result = self.table_rec.recognize(image)

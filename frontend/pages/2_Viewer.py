@@ -63,6 +63,15 @@ def fetch_block_preview(doc_id: str, block_id: str, _bust: int = 0) -> bytes | N
 
 
 @st.cache_data(ttl=60)
+def fetch_available_models() -> dict:
+    try:
+        r = httpx.get(f"{BACKEND_URL}/settings/available-models", timeout=5)
+        return r.json()
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=60)
 def fetch_page_image(doc_id: str, page_num: int, max_w: int = 740, max_h: int = 960):
     """Возвращает (resized_img, orig_w, orig_h, scale) или (None, 0, 0, 1.0)."""
     try:
@@ -1159,16 +1168,37 @@ with col_right:
     st.markdown("---")
     st.markdown("---")
     st.markdown("**🔁 OCR:**")
+
+    # Inline выбор модели для текущего блока
+    _sel_btype = next((b.get("block_type") for b in all_blocks if b.get("block_id") == selected_id), None)
+    _block_model_id = st.session_state.get("viewer_model_choices", {}).get(_sel_btype)
+    if _sel_btype:
+        _avail = fetch_available_models()
+        _models = _avail.get(_sel_btype, {}).get("models", [])
+        if _models:
+            _opts = [m["id"] for m in _models]
+            _opt_labels = [
+                f"{'✅' if m['available'] else '○'} {m['label']}" for m in _models
+            ]
+            _default_idx = _opts.index(_block_model_id) if _block_model_id in _opts else 0
+            _chosen = st.selectbox(
+                "Модель для этого блока",
+                options=_opts,
+                index=_default_idx,
+                format_func=lambda x, _o=_opts, _l=_opt_labels: _l[_o.index(x)],
+                key=f"inline_model_{selected_id}",
+                label_visibility="collapsed",
+            )
+            _block_model_id = _chosen
+
     oc1, oc2 = st.columns(2)
     with oc1:
         if st.button("▶ Этот блок", use_container_width=True, key="btn_ocr_block",
                      help="Запустить OCR только для выбранного блока"):
             try:
-                _btype    = next((b.get("block_type") for b in all_blocks if b.get("id") == selected_id), None)
-                _model_id = st.session_state.get("viewer_model_choices", {}).get(_btype)
                 resp = httpx.post(
                     f"{BACKEND_URL}/processing/{doc_id}/ocr-block/{selected_id}",
-                    json={"model_id": _model_id} if _model_id else {},
+                    json={"model_id": _block_model_id} if _block_model_id else {},
                     timeout=60,
                 )
                 if resp.status_code == 200:

@@ -132,11 +132,13 @@ BLOCK_TYPE_MODELS = {
     ],
     "table_simple": [
         {"id": "dots_ocr",     "label": "dots.ocr (локальный 🥇)",  "requires": "dots_ocr"},
+        {"id": "ollama_7b",    "label": "Ollama qwen2.5vl:7b (fallback)", "requires": "ollama"},
         {"id": "gpt4o",        "label": "GPT-4o (облако)",          "requires_key": "openai"},
         {"id": "openrouter",   "label": "OpenRouter",               "requires_key": "openrouter"},
     ],
     "table_complex": [
         {"id": "dots_ocr",     "label": "dots.ocr (локальный 🥇)",  "requires": "dots_ocr"},
+        {"id": "ollama_7b",    "label": "Ollama qwen2.5vl:7b (fallback)", "requires": "ollama"},
         {"id": "gpt4o",        "label": "GPT-4o (облако)",          "requires_key": "openai"},
         {"id": "claude",       "label": "Claude (облако)",           "requires_key": "anthropic"},
         {"id": "openrouter",   "label": "OpenRouter",               "requires_key": "openrouter"},
@@ -150,6 +152,7 @@ BLOCK_TYPE_MODELS = {
     # legacy — обратная совместимость
     "table": [
         {"id": "dots_ocr",     "label": "dots.ocr (локальный 🥇)",  "requires": "dots_ocr"},
+        {"id": "ollama_7b",    "label": "Ollama qwen2.5vl:7b (fallback)", "requires": "ollama"},
         {"id": "gpt4o",        "label": "GPT-4o (облако)",          "requires_key": "openai"},
         {"id": "openrouter",   "label": "OpenRouter",               "requires_key": "openrouter"},
     ],
