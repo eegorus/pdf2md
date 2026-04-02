@@ -406,6 +406,75 @@ async def download_export(doc_id: str, fmt: str):
     )
 
 
+@router.get("/{doc_id}/media/{filename}", summary="Serve block image")
+async def serve_media(doc_id: str, filename: str):
+    """
+    Сервит PNG-файл из data/results/{doc_id}/blocks/{filename}.
+    Используется Markdown Viewer для отображения изображений вместо base64.
+    """
+    from fastapi.responses import FileResponse
+
+    safe = Path(filename).name
+    if not safe or ".." in safe:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    img_path = DATA_DIR / "results" / doc_id / "blocks" / safe
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail=f"Not found: {safe}")
+    if img_path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise HTTPException(status_code=400, detail="Only image files allowed")
+    return FileResponse(
+        str(img_path),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@router.get("/{doc_id}/export-zip", summary="Скачать ZIP с export.md + изображениями")
+async def export_zip(doc_id: str):
+    """
+    Создаёт ZIP-архив для импорта в Obsidian:
+      export.md          ← markdown с ./blocks/filename.png ссылками
+      blocks/
+        p007figure001.png
+        ...
+    Сначала вызовите POST /{doc_id}/export?format=markdown чтобы export.md был актуальным.
+    """
+    import io
+    import zipfile
+    from fastapi.responses import StreamingResponse
+
+    md_file = DATA_DIR / "results" / doc_id / "export.md"
+    blocks_dir = DATA_DIR / "results" / doc_id / "blocks"
+
+    if not md_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"export.md не найден. Сначала вызовите POST /processing/{doc_id}/export?format=markdown",
+        )
+
+    figure_images = []
+    if blocks_dir.exists():
+        figure_images = [
+            p for p in blocks_dir.iterdir()
+            if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+            and "figure" in p.name
+        ]
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        zf.write(str(md_file), "export.md")
+        for img in figure_images:
+            zf.write(str(img), f"blocks/{img.name}")
+    buf.seek(0)
+
+    short_id = doc_id[:8]
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{short_id}_export.zip"'},
+    )
+
+
 @router.patch("/{doc_id}/export-file/markdown", summary="Сохранить отредактированный markdown")
 async def save_markdown(doc_id: str, payload: dict = Body(default={})):
     """Перезаписывает export.md отредактированным содержимым из фронтенда."""

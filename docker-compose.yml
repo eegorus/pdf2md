@@ -107,6 +107,7 @@ services:
       - ./data:/app/data   # Нужен для отображения результатов и картинок
     environment:
       - BACKEND_URL=${BACKEND_URL}
+      - PUBLIC_BACKEND_URL=${PUBLIC_BACKEND_URL:-http://localhost:8000}
     depends_on:
       backend:
         condition: service_healthy  # Стартуем только когда backend здоров

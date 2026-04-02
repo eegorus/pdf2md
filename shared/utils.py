@@ -147,10 +147,6 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
             lines.append(f"\n$$\n{output}\n$$\n")
 
         elif block_type == "figure":
-            import base64 as _b64mod
-            import io as _io
-            from PIL import Image as _PIL
-
             image_path = block.get("image_path", "")
 
             # Чистим alt: убираем переносы, кавычки и скобки — они ломают Markdown
@@ -159,22 +155,12 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
             alt = raw_alt.strip()[:200]
 
             if image_path and Path(image_path).exists():
-                try:
-                    img = _PIL.open(image_path).convert("RGB")
-                    w, h = img.size
-                    if max(w, h) > 1200:
-                        scale = 1200 / max(w, h)
-                        img = img.resize((int(w * scale), int(h * scale)), _PIL.LANCZOS)
-                    buf = _io.BytesIO()
-                    img.save(buf, format="PNG", optimize=True)
-                    b64str = _b64mod.b64encode(buf.getvalue()).decode("ascii")
-                    md_line = "![" + alt + "](data:image/png;base64," + b64str + ")"
-                    lines.append(md_line)
-                except Exception as _e:
-                    logger.warning(f"figure embed failed {image_path}: {_e}")
-                    lines.append("> 🖼️ " + alt if alt else "> 🖼️ Figure")
+                filename = Path(image_path).name
+                lines.append(f"![](./blocks/{filename})")
+                if alt:
+                    lines.append(f"_{alt}_")
             else:
-                lines.append("> 🖼️ " + alt if alt else "> 🖼️ Figure (no image)")
+                lines.append(f"_{alt if alt else 'Figure'}_")
 
         else:
             lines.append(output + "\n")

@@ -134,6 +134,46 @@ When `bbox` is in the PATCH payload, `processing.py` re-crops `blocks/{block_id}
 
 `backend/shared/` and `shared/` exist separately — the Dockerfile bind-mounts `./shared` to `/app/shared`. The backend's `backend/shared/schemas.py` is the canonical version actually used at runtime; `shared/schemas.py` at repo root is a lighter copy. Keep them in sync when modifying schemas.
 
+## Session log — 2026-04-02
+
+### ✅ Переработка экспорта: ZIP архив с относительными путями вместо base64
+
+**Мотивация:** base64-embedded PNG делает markdown редактирование крайне неудобным (большие файлы, нет нормального текста).
+
+**Реализовано:**
+
+1. **Backend endpoints** (`backend/routers/processing.py`):
+   - `GET /{doc_id}/media/{filename}` — сервит PNG из `blocks/` с защитой от path traversal
+   - `GET /{doc_id}/export-zip` — паковка `export.md` + `blocks/*.png` в ZIP
+   
+2. **Markdown формат** (`backend/shared/utils.py` + `shared/utils.py`):
+   - Вместо `![alt](data:image/png;base64,...)` → `![](./blocks/filename.png)` + `_alt_` на строке ниже
+   - Чистые относительные пути для совместимости с Obsidian и другими vault'ами
+
+3. **Viewer экспорт** (`frontend/pages/2_Viewer.py`):
+   - "📄 MARKDOWN" кнопка теперь скачивает ZIP (не отдельный `.md`)
+   - При клике → генерация → fetching `export-zip`
+
+4. **Markdown Viewer** (`frontend/pages/4_MarkdownViewer.py`):
+   - `PUBLIC_BACKEND_URL` (по умолчанию `http://localhost:8000`) для браузерных ссылок
+   - `resolve_media_urls()` — заменяет `./blocks/filename.png` на inline base64 перед рендером
+   - Fetching PNG через внутренний Docker URL (`BACKEND_URL`), кэш 5 мин, конвертация в base64 для браузера
+   - ZIP-кнопка `📦 ZIP` рядом с методами скачивания
+
+**Архитектура:**
+```
+export.md в storage:     ./blocks/fig.png (неизменяемо, для Obsidian)
+         в браузере:     <img src="data:image/png;base64,..." />
+         в ZIP:          blocks/fig.png (папка внутри архива)
+```
+
+**Достигнуто:**
+- ✅ Obsidian: распакуй ZIP → открой `export.md`, картинки в `./blocks/` работают нативно
+- ✅ Markdown Viewer: картинки отображаются через base64 (надёжно, независимо от маршрутизации)
+- ✅ Редактирование: markdown-файл остаётся компактным, картинки отдельными PNG
+
+---
+
 ## Session log — 2026-03-30
 
 ### 🔍 Профилирование dots.ocr + попытки ускорения

@@ -5,6 +5,7 @@ import httpx
 import streamlit as st
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
+PUBLIC_BACKEND_URL = os.getenv("PUBLIC_BACKEND_URL", "http://localhost:8000")
 
 st.set_page_config(
     page_title="Markdown Viewer — PRMS",
@@ -119,7 +120,7 @@ if _edit_key not in st.session_state:
 
 # ─── Toolbar ──────────────────────────────────────────────────────────────────
 
-col_mode, col_save, col_reset, col_dl = st.columns([3, 1.2, 1.2, 1.2])
+col_mode, col_save, col_reset, col_dl, col_zip = st.columns([3, 1.2, 1.2, 1.2, 1.2])
 
 with col_mode:
     view_mode = st.radio(
@@ -170,7 +171,63 @@ with col_dl:
         key="btn_md_dl",
     )
 
+with col_zip:
+    _zip_key = f"zip_bytes_{selected_doc_id}"
+    if _zip_key not in st.session_state:
+        try:
+            r = httpx.get(
+                f"{BACKEND_URL}/processing/{selected_doc_id}/export-zip",
+                timeout=30,
+            )
+            st.session_state[_zip_key] = r.content if r.status_code == 200 else None
+        except Exception:
+            st.session_state[_zip_key] = None
+    _zip_bytes = st.session_state.get(_zip_key)
+    if _zip_bytes:
+        st.download_button(
+            "📦 ZIP",
+            data=_zip_bytes,
+            file_name=f"{selected_doc_id[:8]}_export.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="btn_md_zip",
+        )
+    else:
+        st.button("📦 ZIP", disabled=True, use_container_width=True, key="btn_md_zip")
+
 st.divider()
+
+_IMG_RE = re.compile(r'!\[([^\]]*)\]\(\./blocks/([^)]+)\)')
+
+
+@st.cache_data(ttl=300)
+def _fetch_image_b64(doc_id: str, filename: str) -> str | None:
+    """Загружает PNG блока через внутренний Docker URL, возвращает base64."""
+    import base64
+    try:
+        r = httpx.get(
+            f"{BACKEND_URL}/processing/{doc_id}/media/{filename}",
+            timeout=10,
+        )
+        if r.status_code == 200:
+            return base64.b64encode(r.content).decode("ascii")
+    except Exception:
+        pass
+    return None
+
+
+def resolve_media_urls(content: str, doc_id: str) -> str:
+    """Заменяет ./blocks/filename.png на inline base64 <img> для рендера в браузере."""
+    def _replace(m: re.Match) -> str:
+        alt = m.group(1).replace('"', "'")
+        filename = m.group(2)
+        b64 = _fetch_image_b64(doc_id, filename)
+        if b64:
+            return f'<img src="data:image/png;base64,{b64}" alt="{alt}" style="max-width:100%;height:auto;" />'
+        return f"_{alt if alt else 'Figure'}_"
+
+    return _IMG_RE.sub(_replace, content)
+
 
 # ─── Render helpers ───────────────────────────────────────────────────────────
 
@@ -200,7 +257,8 @@ def render_editor(content: str, key: str) -> str:
 # ─── Content area ─────────────────────────────────────────────────────────────
 
 if view_mode == "👁 Просмотр":
-    render_preview(st.session_state.get(_edit_key, md_content))
+    resolved = resolve_media_urls(st.session_state.get(_edit_key, md_content), selected_doc_id)
+    render_preview(resolved)
 
 elif view_mode == "✏️ Редактор":
     new_content = render_editor(st.session_state[_edit_key], _edit_key)
@@ -212,7 +270,8 @@ else:  # Split
     col_left, col_right = st.columns(2)
     with col_left:
         st.caption("👁 Превью")
-        render_preview(st.session_state.get(_edit_key, md_content))
+        resolved = resolve_media_urls(st.session_state.get(_edit_key, md_content), selected_doc_id)
+        render_preview(resolved)
     with col_right:
         st.caption("✏️ Редактор")
         new_content = render_editor(st.session_state[_edit_key], _edit_key)

@@ -92,7 +92,7 @@ def fetch_page_image(doc_id: str, page_num: int, max_w: int = 740, max_h: int = 
 
 def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
     export_formats = [
-        ("markdown", "📄 MARKDOWN", "text/markdown",    "md"),
+        ("markdown", "📄 MARKDOWN", "application/zip", "zip"),
         ("json",     "🗂 JSON",     "application/json", "json"),
         ("csv",      "📊 CSV",      "text/csv",         "csv"),
     ]
@@ -107,10 +107,16 @@ def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
                             f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}",
                             timeout=60,
                         )
-                        dl = httpx.get(
-                            f"{BACKEND_URL}/processing/{doc_id}/export-file/{fmt}",
-                            timeout=30,
-                        )
+                        if fmt == "markdown":
+                            dl = httpx.get(
+                                f"{BACKEND_URL}/processing/{doc_id}/export-zip",
+                                timeout=30,
+                            )
+                        else:
+                            dl = httpx.get(
+                                f"{BACKEND_URL}/processing/{doc_id}/export-file/{fmt}",
+                                timeout=30,
+                            )
                         if dl.status_code == 200:
                             st.session_state[cache_key] = {
                                 "content":  dl.content,
