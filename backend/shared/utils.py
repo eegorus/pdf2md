@@ -8,6 +8,8 @@ import time
 import logging
 from pathlib import Path
 
+from shared.latex_fixer import fix_latex
+
 logger = logging.getLogger("prms.utils")
 
 
@@ -122,7 +124,7 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
             continue
 
         if block_type == "text":
-            lines.append(output + "\n")
+            lines.append(fix_latex(output) + "\n")
 
         elif block_type in {"table", "table_simple", "table_complex"}:
             # Вырезаем только <table>...</table> — убираем <html><body> враппер
@@ -144,7 +146,9 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
                 lines.append("\n" + output + "\n")
 
         elif block_type == "formula":
-            lines.append(f"\n$$\n{output}\n$$\n")
+            # Убираем случайные $ которые OCR мог добавить снаружи
+            cleaned = output.strip().lstrip("$").rstrip("$").strip()
+            lines.append(f"\n$$\n{cleaned}\n$$\n")
 
         elif block_type == "figure":
             image_path = block.get("image_path", "")
