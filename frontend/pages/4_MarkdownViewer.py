@@ -232,36 +232,32 @@ def resolve_media_urls(content: str, doc_id: str) -> str:
 # ─── LaTeX editor tools ───────────────────────────────────────────────────────
 
 def render_latex_toolbar(edit_key: str) -> None:
-    """Панель быстрой вставки LaTeX-сниппетов над редактором."""
-    st.caption("⚡ LaTeX — быстрая вставка:")
-
+    """Сниппеты LaTeX для копирования в буфер и вставки в нужное место."""
     SNIPPETS = [
-        ("x²",      "$x^{2}$",                  "Степень 2"),
-        ("xₙ",      "$x_{n}$",                  "Нижний индекс"),
-        ("10³ft³",  "$10^3\\,\\text{ft}^3$",    "Объём газа (10³ ft³)"),
-        ("10³bbl",  "$10^3\\,\\text{bbl}$",     "Объём нефти (10³ bbl)"),
-        ("$/bbl",   "\\$/\\text{bbl}",          "Цена нефти ($/bbl)"),
-        ("$/Mscf",  "\\$/\\text{Mscf}",         "Цена газа ($/Mscf)"),
-        ("CO₂",     "CO$_{2}$",                 "Диоксид углерода"),
-        ("H₂S",     "H$_{2}$S",                "Сероводород"),
-        ("±",       "$\\pm$",                   "Плюс-минус"),
-        ("×",       "$\\times$",                "Умножение"),
-        ("a/b",     "$\\frac{a}{b}$",           "Дробь"),
-        ("∑",       "$$\\sum_{i=1}^{n} x_i$$", "Сумма"),
+        ("x²  — Степень 2",          "$x^{2}$"),
+        ("xₙ  — Нижний индекс",      "$x_{n}$"),
+        ("10³ft³ — Объём газа",       "$10^3\\,\\text{ft}^3$"),
+        ("10³bbl — Объём нефти",      "$10^3\\,\\text{bbl}$"),
+        ("10⁶bbl",                    "$10^6\\,\\text{bbl}$"),
+        ("$/bbl  — Цена нефти",       "\\$/\\text{bbl}"),
+        ("$/Mscf — Цена газа",        "\\$/\\text{Mscf}"),
+        ("CO₂",                       "CO$_{2}$"),
+        ("H₂S",                       "H$_{2}$S"),
+        ("± / ×",                     "$\\pm$ / $\\times$"),
+        ("a/b  — Дробь",              "$\\frac{a}{b}$"),
+        ("∑  — Сумма",                "$$\\sum_{i=1}^{n} x_i$$"),
     ]
 
-    cols = st.columns(len(SNIPPETS))
-    for i, (col, (label, latex, hint)) in enumerate(zip(cols, SNIPPETS)):
-        with col:
-            if st.button(
-                label,
-                help=f"{hint}\n\nВставит: {latex}",
-                key=f"tb_{i}_{edit_key}",
-                use_container_width=True,
-            ):
-                current = st.session_state.get(edit_key, "")
-                st.session_state[edit_key] = current + latex
-                st.rerun()
+    with st.expander("⚡ LaTeX сниппеты — кликни поле, Ctrl+A, Ctrl+C, потом вставь в редактор", expanded=False):
+        cols = st.columns(3)
+        for i, (label, latex) in enumerate(SNIPPETS):
+            with cols[i % 3]:
+                st.text_input(
+                    label,
+                    value=latex,
+                    key=f"snip_{i}_{edit_key}",
+                    disabled=True,
+                )
 
 
 def render_find_replace(edit_key: str) -> None:
@@ -359,15 +355,16 @@ elif view_mode == "✏️ Редактор":
         st.session_state[_dirty_key] = True
 
 else:  # Split
+    render_latex_toolbar(_edit_key)
+    render_find_replace(_edit_key)
     col_left, col_right = st.columns(2)
     with col_left:
         st.caption("👁 Превью")
-        resolved = resolve_media_urls(st.session_state.get(_edit_key, md_content), selected_doc_id)
-        render_preview(resolved)
+        with st.container(height=800, border=False):
+            resolved = resolve_media_urls(st.session_state.get(_edit_key, md_content), selected_doc_id)
+            render_preview(resolved)
     with col_right:
         st.caption("✏️ Редактор")
-        render_latex_toolbar(_edit_key)
-        render_find_replace(_edit_key)
         new_content = render_editor(st.session_state[_edit_key], _edit_key)
         if new_content != st.session_state[_edit_key]:
             st.session_state[_edit_key] = new_content

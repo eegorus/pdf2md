@@ -134,6 +134,57 @@ When `bbox` is in the PATCH payload, `processing.py` re-crops `blocks/{block_id}
 
 `backend/shared/` and `shared/` exist separately — the Dockerfile bind-mounts `./shared` to `/app/shared`. The backend's `backend/shared/schemas.py` is the canonical version actually used at runtime; `shared/schemas.py` at repo root is a lighter copy. Keep them in sync when modifying schemas.
 
+## Session log — 2026-04-06
+
+### ✅ LaTeX слой: авто-коррекция OCR + UI отредактирования
+
+**Мотивация:** OCR теряет надстрочные/подстрочные индексы (10³ft³ → 103ft3, CO₂ → CO2). Нужна автокоррекция при экспорте + удобный UX для ручной правки.
+
+**Реализовано:**
+
+1. **Backend — `backend/shared/latex_fixer.py` + `shared/latex_fixer.py`**:
+   - `fix_latex()` функция с Unicode-конвертацией (⁰¹²³ → лучше `$...$`) + скомпилированные regex-паттерны
+   - Паттерны: нефтегазовые единицы (10³ft³, 10³bbl), химические формулы (CO₂, H₂S), общие степени (m², km³)
+   - Вызывается в `blocks_to_markdown()` для **text-блоков** (не трогает таблицы, формулы)
+
+2. **Backend — `backend/shared/utils.py` + `shared/utils.py`**:
+   - Text-блоки: `lines.append(fix_latex(output) + "\n")`
+   - Formula-блоки: очистка от случайных `$` перед оборачиванием в `$$...$$`
+
+3. **Frontend — `frontend/pages/4_MarkdownViewer.py`**:
+   - **LaTeX Toolbar** (в режимах "✏️ Редактор" и "↕️ Split"):
+     - 12 сниппетов (x², xₙ, 10³ft³, CO₂ и т.д.)
+     - Раскрывающееся поле со скопируемыми текстовыми input'ами (`disabled=True`)
+     - Workflow: кликнуть поле → Ctrl+A → Ctrl+C → вставить в редактор (Ctrl+V)
+   
+   - **Find & Replace** (regex-поддержка):
+     - Поиск: текст или regex (`10\^?3ft\^?3`)
+     - Замена: целевой шаблон (`$10^3\,\text{ft}^3$`)
+     - Кнопка "Посчитать" → "Заменить всё" с feedback
+   
+   - **Split-режим UX улучшения:**
+     - Toolbar (LaTeX + Find/Replace) **над обеими колонками** — однозначное расположение
+     - Превью: `st.container(height=800)` — скроллится как редактор
+     - Обе колонки начинаются с одного уровня (на одной высоте)
+
+**Примеры автокоррекций при экспорте:**
+```
+OCR выдал              → Экспорт
+──────────────────────────────────────
+"объем 103ft3"         → "объем $10^3\,\text{ft}^3$"
+"давление CO2"         → "давление CO$_{2}$"
+"площадь 100m2"        → "площадь $100\,\text{m}^2$"
+```
+
+**Достигнуто:**
+- ✅ Все паттерны скомпилированы один раз при импорте (performance)
+- ✅ Markdown остаётся редактируемым (не base64, не сложная синтаксис)
+- ✅ Сниппеты работают везде (localhost HTTP, не требует HTTPS/Clipboard API)
+- ✅ Find & Replace работает с regex для массовых правок
+- ✅ Split-режим удобен: обе колонки синхронны по высоте и расположению
+
+---
+
 ## Session log — 2026-04-02
 
 ### ✅ Переработка экспорта: ZIP архив с относительными путями вместо base64
