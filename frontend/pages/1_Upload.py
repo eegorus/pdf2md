@@ -77,18 +77,29 @@ with st.sidebar:
             if pages:
                 btn_label += f" · {pages}"
 
-            if st.button(
-                btn_label,
-                key=f"sb_{d['doc_id']}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary",
-            ):
-                st.session_state.upload_doc_id   = d["doc_id"]
-                st.session_state.upload_doc_name = fname
-                st.session_state.upload_stage    = status_to_stage.get(
-                    d.get("status", ""), "mode"
-                )
-                st.rerun()
+            col_doc, col_del = st.columns([5, 1])
+            with col_doc:
+                if st.button(
+                    btn_label,
+                    key=f"sb_{d['doc_id']}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                ):
+                    st.session_state.upload_doc_id   = d["doc_id"]
+                    st.session_state.upload_doc_name = fname
+                    st.session_state.upload_stage    = status_to_stage.get(
+                        d.get("status", ""), "mode"
+                    )
+                    st.rerun()
+            with col_del:
+                if st.button("🗑", key=f"del_{d['doc_id']}", use_container_width=True,
+                             help=f"Удалить {fname}"):
+                    api("DELETE", f"/documents/{d['doc_id']}")
+                    if d["doc_id"] == st.session_state.get("upload_doc_id"):
+                        st.session_state.upload_doc_id   = None
+                        st.session_state.upload_doc_name = None
+                        st.session_state.upload_stage    = "upload"
+                    st.rerun()
 
     if docs:
         st.markdown("---")

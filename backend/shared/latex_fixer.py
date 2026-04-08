@@ -74,18 +74,103 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def fix_latex(text: str) -> str:
+def escape_stray_dollars(text: str) -> str:
     """
-    Основная функция авто-коррекции OCR-артефактов → LaTeX.
-    Предназначена для однократного вызова на сырой OCR-вывод.
+    Экранирует одиночные знаки $ в тексте, не трогая:
+    - Уже оформленные формулы: $...$, $$...$$, \$
+    - Конструкции вида $^{...}$, $_{...}$ (из fix_latex)
+
+    Алгоритм:
+    1. Находим все $ которые НЕ являются началом $...$ или $$...$$
+    2. Находим все $ которые НЕ закрывают формулу
+    3. Экранируем их как \$
     """
     if not text:
         return text
 
-    # 1. Unicode символы (простой translate, не regex)
+    # Защита: не трогаем уже экранированные \$
+    # Сначала заменяем на временный маркер, потом восстанавливаем
+    result = []
+    i = 0
+    while i < len(text):
+        # Пропускаем \$ — уже экранированный
+        if i < len(text) - 1 and text[i:i+2] == "\\$":
+            result.append("\\$")
+            i += 2
+            continue
+
+        # Находим неэкранированный $
+        if text[i] == "$":
+            # Проверяем: это начало $$...$$?
+            if i < len(text) - 1 and text[i+1] == "$":
+                # Начало $$...$$, пропускаем его и ищем закрывающий $$
+                result.append("$$")
+                i += 2
+                # Ищем закрывающий $$
+                while i < len(text) - 1:
+                    if text[i:i+2] == "$$":
+                        result.append("$$")
+                        i += 2
+                        break
+                    result.append(text[i])
+                    i += 1
+                else:
+                    # Не нашли закрывающий $$, добавляем оставшееся
+                    if i < len(text):
+                        result.append(text[i])
+                        i += 1
+            else:
+                # Одиночный $, проверяем: это формула $...$ или просто $?
+                # Ищем закрывающий $ (но не $$)
+                j = i + 1
+                found_close = False
+                while j < len(text):
+                    if text[j] == "$":
+                        # Нашли потенциальный закрывающий $
+                        if j + 1 < len(text) and text[j+1] != "$":
+                            # Это одиночный $, формула найдена
+                            found_close = True
+                            break
+                        elif j + 1 >= len(text):
+                            # Конец строки, это закрывающий $
+                            found_close = True
+                            break
+                    j += 1
+
+                if found_close:
+                    # Это формула $...$, не экранируем
+                    result.append("$")
+                else:
+                    # Это одиночный $, экранируем
+                    result.append("\\$")
+                i += 1
+        else:
+            result.append(text[i])
+            i += 1
+
+    return "".join(result)
+
+
+def fix_latex(text: str) -> str:
+    """
+    Основная функция авто-коррекции OCR-артефактов → LaTeX.
+    Предназначена для однократного вызова на сырой OCR-вывод.
+
+    Порядок:
+    1. Экранируем одиночные $ → \$
+    2. Исправляем unicode sup/sub
+    3. Применяем регулярные паттерны
+    """
+    if not text:
+        return text
+
+    # 1. Экранируем одиночные $ чтобы они не интерпретировались как курсив
+    text = escape_stray_dollars(text)
+
+    # 2. Unicode символы (простой translate, не regex)
     text = _fix_unicode(text)
 
-    # 2. Скомпилированные regex-паттерны
+    # 3. Скомпилированные regex-паттерны
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
 
