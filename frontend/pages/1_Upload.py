@@ -214,7 +214,6 @@ elif st.session_state.upload_stage == "quick_setup":
     cloud_parsers = [p for p in parsers_data if p["needs_api_key"]]
 
     st.markdown("#### 🖥 Локальные парсеры")
-    selected = None
     for p in local_parsers:
         avail  = p["available"]
         badge  = "✅" if avail else "❌ не установлен"
@@ -235,7 +234,16 @@ elif st.session_state.upload_stage == "quick_setup":
                 if st.button("Выбрать", key=f"sel_{p['name']}", use_container_width=True):
                     st.session_state.quick_parser = p["name"]
                     st.session_state.quick_api_key = ""
-                    selected = p["name"]
+                    st.rerun()
+
+    # Загружаем статус API-ключей из Settings
+    settings_keys = (api("GET", "/settings/keys") or {}).get("providers", {})
+    pid_map = {
+        "gpt4o":      "openai",
+        "claude":     "anthropic",
+        "llamaparse": "llamaparse",
+        "openrouter": "openrouter",
+    }
 
     st.markdown("#### ☁️ Облачные парсеры")
     for p in cloud_parsers:
@@ -244,19 +252,30 @@ elif st.session_state.upload_stage == "quick_setup":
             st.caption(f"❌ {p['label']} — пакет не установлен")
             continue
 
+        provider_id  = pid_map.get(p["name"])
+        key_in_settings = bool(
+            provider_id and settings_keys.get(provider_id, {}).get("is_set")
+        )
+
         with st.expander(f"{p['label']} — {p['description']}"):
-            key_input = st.text_input(
-                "API Key", type="password",
-                key=f"key_{p['name']}",
-                placeholder="sk-..." if p["name"] == "gpt4o" else "...",
-            )
+            if key_in_settings:
+                st.success("✅ API ключ задан в Settings")
+                key_input = ""   # backend возьмёт из settings.json
+            else:
+                st.warning("⚠️ Ключ не задан — введите или добавьте в Settings")
+                key_input = st.text_input(
+                    "API Key", type="password",
+                    key=f"key_{p['name']}",
+                    placeholder="sk-..." if p["name"] == "gpt4o" else "...",
+                )
+
             if st.button("Выбрать", key=f"sel_{p['name']}", use_container_width=True):
-                if not key_input:
-                    st.error("Введите API key")
+                if not key_in_settings and not key_input:
+                    st.error("Введите API key или задайте его в Settings")
                 else:
                     st.session_state.quick_parser  = p["name"]
-                    st.session_state.quick_api_key = key_input
-                    selected = p["name"]
+                    st.session_state.quick_api_key = key_input  # пусто = backend читает из settings
+                    st.rerun()
 
     st.markdown("---")
     chosen = st.session_state.quick_parser
@@ -316,7 +335,20 @@ elif st.session_state.upload_stage == "quick_done":
     st.success(f"✅ Готово! Парсер: **{st.session_state.quick_parser}**")
     st.markdown("---")
 
-    col_dl, col_copy, col_new = st.columns(3)
+    col_md, col_new = st.columns(2)
+    with col_md:
+        if st.button("📄 Открыть в Markdown Viewer", type="primary", use_container_width=True):
+            st.session_state["md_viewer_doc_id"] = doc_id
+            st.switch_page("pages/4_MarkdownViewer.py")
+    with col_new:
+        if st.button("📄 Новый документ", use_container_width=True):
+            for k in ["upload_doc_id", "upload_doc_name"]:
+                st.session_state[k] = None
+            st.session_state.upload_stage = "upload"
+            st.rerun()
+
+    st.markdown("---")
+    col_dl, col_copy = st.columns(2)
     with col_dl:
         st.download_button(
             "⬇️ Скачать Markdown",
@@ -324,19 +356,12 @@ elif st.session_state.upload_stage == "quick_done":
             file_name=f"{st.session_state.upload_doc_name or doc_id}.md",
             mime="text/markdown",
             use_container_width=True,
-            type="primary",
         )
     with col_copy:
         st.button("📋 Скопировать", use_container_width=True,
                   on_click=lambda: st.write(
                       f"<script>navigator.clipboard.writeText(`{md[:100]}`)</script>",
                       unsafe_allow_html=True))
-    with col_new:
-        if st.button("📄 Новый документ", use_container_width=True):
-            for k in ["upload_doc_id", "upload_doc_name"]:
-                st.session_state[k] = None
-            st.session_state.upload_stage = "upload"
-            st.rerun()
 
     st.markdown("### Результат")
     tab_preview, tab_raw = st.tabs(["👁 Preview", "📝 Raw Markdown"])

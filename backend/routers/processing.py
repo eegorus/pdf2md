@@ -392,10 +392,21 @@ async def download_export(doc_id: str, fmt: str):
 
     out_path = DATA_DIR / "results" / doc_id / f"export.{ext_map[fmt]}"
     if not out_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Файл не найден — сначала POST /{doc_id}/export?format={fmt}",
-        )
+        # Fallback для quick-mode документов: result.md вместо export.md
+        if fmt == "markdown":
+            result_path = DATA_DIR / "results" / doc_id / "result.md"
+            if result_path.exists():
+                out_path = result_path
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Файл не найден — сначала POST /{doc_id}/export?format={fmt}",
+                )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Файл не найден — сначала POST /{doc_id}/export?format={fmt}",
+            )
 
     filename = f"{doc_id[:8]}_{fmt}.{ext_map[fmt]}"
     return FileResponse(
@@ -485,11 +496,10 @@ async def save_markdown(doc_id: str, payload: dict = Body(default={})):
         raise HTTPException(status_code=400, detail="content не может быть пустым")
 
     md_file = DATA_DIR / "results" / doc_id / "export.md"
-    if not md_file.exists():
-        raise HTTPException(status_code=404, detail=f"export.md для {doc_id} не найден")
-
-    backup = DATA_DIR / "results" / doc_id / "export.md.bak"
-    shutil.copy2(str(md_file), str(backup))
+    # Для quick-mode документов export.md может не существовать — создаём его
+    if md_file.exists():
+        backup = DATA_DIR / "results" / doc_id / "export.md.bak"
+        shutil.copy2(str(md_file), str(backup))
 
     md_file.write_text(content, encoding="utf-8")
     logger.info(f"export.md сохранён для {doc_id}, {len(content)} символов")

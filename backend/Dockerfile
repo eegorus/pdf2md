@@ -34,12 +34,16 @@ RUN pip uninstall -y texteller 2>/dev/null || true \
     && rm -rf /opt/texteller/.git
 
 # ── Quick Parsers (Быстрый режим) ─────────────────────────────────────
+# marker-pdf, docling, llama-parse, anthropic — ставим вместе (совместимые)
 RUN pip install --no-cache-dir \
     marker-pdf \
-    "unstructured[pdf]" \
     docling \
     llama-parse \
     anthropic
+
+# unstructured[pdf] — отдельный слой: имеет сложный граф зависимостей,
+# из-за которого pip ResolutionTooDeep если ставить вместе с docling
+RUN pip install --no-cache-dir "unstructured[pdf]"
 
 # ── Environment ───────────────────────────────────────────────────────
 RUN pip install --no-cache-dir --force-reinstall "transformers==4.51.3"

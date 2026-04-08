@@ -134,6 +134,60 @@ When `bbox` is in the PATCH payload, `processing.py` re-crops `blocks/{block_id}
 
 `backend/shared/` and `shared/` exist separately — the Dockerfile bind-mounts `./shared` to `/app/shared`. The backend's `backend/shared/schemas.py` is the canonical version actually used at runtime; `shared/schemas.py` at repo root is a lighter copy. Keep them in sync when modifying schemas.
 
+## Session log — 2026-04-07
+
+### ✅ Быстрый режим обработки: локальные + облачные парсеры
+
+**Проблемы в начале:**
+1. Пакеты `llama-parse`, `anthropic`, `marker-pdf`, `docling`, `unstructured` были в Dockerfile, но контейнер не пересобран
+2. Облачные парсеры требовали ввод API key в quick_setup, вместо того чтобы читать из Settings
+3. После выбора парсера кнопка не обновляла визуальное выделение (граница на карточке не менялась)
+4. Markdown Viewer открывал только `ocr_done` документы (детальны режим), исключая `done` (quick-mode)
+
+**Реализовано:**
+
+**1. Dockerfile — разделил pip слои** (`backend/Dockerfile`, lines 36–45):
+   - `marker-pdf`, `docling`, `llama-parse`, `anthropic` — первый `RUN`
+   - `unstructured[pdf]` — отдельный `RUN` (имеет конфликтующий граф зависимостей)
+   - **Причина**: pip ResolutionTooDeep (200000) при ставке вместе
+   - `transformers==4.51.3` force-reinstall дважды — восстанавливает после unstructured
+
+**2. Backend — интеграция API ключей** (`backend/routers/quick.py`):
+   - `_resolve_api_key()`: если `api_key` пустой → читает из `settings.json` через mapping `parser_name → provider_id`
+   - Маппинг: `llamaparse→llamaparse`, `gpt4o→openai`, `claude→anthropic`, `openrouter→openrouter`
+   - Endpoint `POST /quick/{doc_id}/run` вызывает `_resolve_api_key()` даже если ключ передан пустой
+
+**3. Frontend — UI улучшения** (`frontend/pages/1_Upload.py`, lines 240–279):
+   - Для облачных парсеров: загруженном статус ключа через `GET /settings/keys`
+   - Если всё задано в Settings → `✅ API ключ в Settings`, поле ввода не показывается
+   - Если нет → `⚠️ Ключ не задан`, доступен ввод или ссылка в Settings
+   - **st.rerun() после выбора** — переустанавливает граничку на карточке
+
+**4. Export fallback** (`backend/routers/processing.py`, lines 393–410):
+   - `GET /export-file/markdown`: если нет `export.md` → пытается `result.md` (quick-mode)
+   - Fallback только для markdown (остальные форматы остаются как были)
+
+**5. PATCH markdown** (`backend/routers/processing.py`, lines 487–495):
+   - `PATCH /export-file/markdown`: создаёт `export.md` даже если его нет
+
+**6. Markdown Viewer расширен** (`frontend/pages/4_MarkdownViewer.py`, lines 70–82):
+   - Статусы: `ocr_done` + `"done"` (статус quick-mode хранится в meta.json)
+   - Иконки в списке: `⚡` для быстрого, `🔬` для детального режима
+
+**7. Кнопка в quick_done** (`frontend/pages/1_Upload.py`, lines 338–348):
+   - **"📄 Открыть в Markdown Viewer"** — first button, primary type
+   - **"📄 Новый документ"** — second button
+   - Остальное (скачать, скопировать) — ниже
+
+**Результат:**
+- ✅ Все 8 парсеров доступны: 4 локальных (PyMuPDF, Marker, Docling, Unstructured) + 4 облачных (LlamaParse, GPT-4o, Claude, OpenRouter)
+- ✅ API ключи из Settings используются без повторного ввода
+- ✅ Выбор парсера сразу визуально отражается на карточке
+- ✅ Quick-mode документы открываются в Markdown Viewer рядом с detail-mode
+- ✅ transformers остаётся на 4.51.3 (не сбивается)
+
+---
+
 ## Session log — 2026-04-06
 
 ### ✅ LaTeX слой: авто-коррекция OCR + UI отредактирования

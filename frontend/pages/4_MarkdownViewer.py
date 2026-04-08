@@ -67,16 +67,20 @@ def generate_export(doc_id: str) -> bool:
 st.title("📄 Markdown Viewer")
 
 docs = fetch_documents()
-ready_docs = [d for d in docs if d.get("status") in ("ocr_done", "ocrdone")]
+ready_docs = [d for d in docs if d.get("status") in ("ocr_done", "ocrdone", "done")]
 
 if not ready_docs:
-    st.info("Нет документов с завершённым OCR. Перейди в Upload и запусти OCR.")
+    st.info("Нет обработанных документов. Загрузи PDF в Upload и запусти обработку.")
     st.stop()
 
 default_doc_id = st.session_state.get("viewer_doc_id") or st.session_state.get("md_viewer_doc_id")
 
 doc_options = {
-    d["doc_id"]: f"{d.get('filename', d['doc_id'][:12])} ({d.get('page_count', '?')} стр.)"
+    d["doc_id"]: (
+        f"⚡ {d.get('filename', d['doc_id'][:12])} ({d.get('page_count', '?')} стр.)"
+        if d.get("mode") == "quick" else
+        f"🔬 {d.get('filename', d['doc_id'][:12])} ({d.get('page_count', '?')} стр.)"
+    )
     for d in ready_docs
 }
 

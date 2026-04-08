@@ -19,6 +19,28 @@ router = APIRouter(prefix="/quick", tags=["quick"])
 # Состояние задач: doc_id → {status, markdown, error, parser, started_at}
 _jobs: dict[str, dict] = {}
 
+# Маппинг parser_name → provider_id в settings.json
+_PARSER_PROVIDER = {
+    "llamaparse": "llamaparse",
+    "gpt4o":      "openai",
+    "claude":     "anthropic",
+    "openrouter": "openrouter",
+}
+
+
+def _resolve_api_key(parser_name: str, api_key: str) -> str:
+    """Если api_key пустой — пробуем взять из settings.json."""
+    if api_key:
+        return api_key
+    provider = _PARSER_PROVIDER.get(parser_name)
+    if not provider:
+        return ""
+    try:
+        from routers.settings import _load_settings
+        return _load_settings().get("keys", {}).get(provider, "")
+    except Exception:
+        return ""
+
 
 def _run_parser(doc_id: str, parser_name: str, api_key: str):
     from pipeline.quick_parsers import get_parser
@@ -29,7 +51,8 @@ def _run_parser(doc_id: str, parser_name: str, api_key: str):
         pdf_path = DATA_DIR / "uploads" / doc_id / meta["filename"]
 
         parser   = get_parser(parser_name)
-        markdown = parser.run(pdf_path, api_key=api_key)
+        resolved_key = _resolve_api_key(parser_name, api_key)
+        markdown = parser.run(pdf_path, api_key=resolved_key)
 
         # Сохраняем результат
         out_dir = DATA_DIR / "results" / doc_id
@@ -95,11 +118,14 @@ async def run_quick(doc_id: str, payload: dict = Body(...)):
             status_code=422,
             detail=f"Парсер '{parser_name}' не установлен"
         )
-    if parser.needs_api_key and not api_key:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Парсер '{parser_name}' требует API key"
-        )
+    if parser.needs_api_key:
+        resolved = _resolve_api_key(parser_name, api_key)
+        if not resolved:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Парсер '{parser_name}' требует API key — задайте в Settings или введите вручную"
+            )
+        api_key = resolved
 
     _jobs[doc_id] = {
         "status":     "running",
