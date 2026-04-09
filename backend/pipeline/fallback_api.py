@@ -101,3 +101,27 @@ class FallbackAPI:
         except Exception as e:
             logger.error(f"Fallback error ({block_type}): {e}")
             return f"[{block_type}: error — {type(e).__name__}]"
+
+    def process_with_model(self, image: Image.Image, block_type: str,
+                           model: str | None = None, prompt: str | None = None) -> str:
+        """Ollama с конкретной моделью и промптом (для формул, фигур и т.п.)."""
+        image   = image.convert("RGB")
+        model   = model or self.model
+        prompt  = prompt or PROMPTS.get(block_type, PROMPTS["text"])
+        img_b64 = self._to_base64(image)
+
+        payload = {
+            "model":  model,
+            "prompt": prompt,
+            "images": [img_b64],
+            "stream": False,
+            "options": {"temperature": 0.05, "num_predict": 512, "num_ctx": 2048},
+        }
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                resp = client.post(f"{self.ollama_url}/api/generate", json=payload)
+                resp.raise_for_status()
+                return resp.json().get("response", "").strip()
+        except Exception as e:
+            logger.error(f"process_with_model ({model}): {e}")
+            return f"formula error: {type(e).__name__}"

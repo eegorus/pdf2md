@@ -1060,9 +1060,26 @@ with col_right:
                 height=280, scrolling=True,
             )
         elif btype == "formula":
-            clean = output.strip().strip("$")
-            try:    st.latex(clean)
-            except: st.code(clean)
+            import json as _json
+            latex_json = _json.dumps(output)
+            components.html(f"""
+            <link rel="stylesheet"
+                  href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+            <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+            <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+            <div id="f" style="font-size:14px;padding:4px;font-family:serif;color:#e0e0e0"></div>
+            <script>
+              document.getElementById('f').textContent = {latex_json};
+              renderMathInElement(document.getElementById('f'), {{
+                delimiters: [
+                  {{left:'$$',right:'$$',display:true}},
+                  {{left:'$',right:'$',display:false}},
+                  {{left:'\\\\(',right:'\\\\)',display:false}},
+                  {{left:'\\\\[',right:'\\\\]',display:true}}
+                ], throwOnError: false
+              }});
+            </script>
+            """, height=80, scrolling=False)
         else:
             st.text_area(
                 "", value=output, height=120,

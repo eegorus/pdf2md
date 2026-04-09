@@ -290,12 +290,19 @@ class OCRPipeline:
                 return self.fallback.process(image, "table")
 
             elif block_type == "formula":
+                # Если явно выбрана облачная модель — идём напрямую
+                if model_id in ("gpt4o", "claude", "openrouter"):
+                    return self._process_cloud(image, "formula", model_id)
+                # Если явно выбран Ollama — пропускаем TexTeller
+                if model_id == "ollama":
+                    return self._formula_via_ollama(image)
+                # Дефолт: TexTeller Python API
                 if self.formula_ocr:
                     result = self.formula_ocr.recognize(image)
                     if result:
-                        return result
-                # TexTeller — CPU инструмент, VRAM не нужна
-                return self.fallback.process(image, "formula")
+                        return self._normalize_latex(result)
+                # Fallback: Ollama с лёгкой моделью
+                return self._formula_via_ollama(image)
 
             elif block_type == "figure":
                 model_override = None
@@ -312,6 +319,36 @@ class OCRPipeline:
             logger.error(f"Ошибка {block_type} модуля: {e}, пробуем fallback")
             torch.cuda.empty_cache()
             return self.fallback.process(image, block_type)
+
+    def _formula_via_ollama(self, image: "Image.Image") -> str:
+        """Распознаёт формулу через Ollama с улучшенным промптом."""
+        formula_model = os.getenv(
+            "OLLAMA_FORMULA_MODEL",
+            os.getenv("OLLAMA_FIGURE_MODEL",
+                      os.getenv("OLLAMA_FALLBACK_MODEL", "qwen2.5vl:7b"))
+        )
+        prompt = (
+            "This image contains a mathematical formula or equation. "
+            "Convert it to LaTeX. Return ONLY the LaTeX expression wrapped in $$...$$. "
+            "Example: $$\\sigma_{\\max} = 20.69\\text{ MPa}$$. "
+            "No explanations, no surrounding text."
+        )
+        return self.fallback.process_with_model(image, "formula",
+                                                model=formula_model,
+                                                prompt=prompt)
+
+    def _normalize_latex(self, latex: str) -> str:
+        """Нормализует LaTeX вывод в $$...$$ для Markdown рендеринга."""
+        import re
+        latex = latex.strip()
+        latex = re.sub(r'\n{2,}', '\n', latex)
+        if latex.startswith("$$") and latex.endswith("$$"):
+            return latex
+        if latex.startswith("\\[") and latex.endswith("\\]"):
+            return "$$" + latex[2:-2].strip() + "$$"
+        if not latex.startswith(("$", "\\(")):
+            return f"$$\n{latex}\n$$"
+        return latex
 
     def _process_cloud(self, image: "Image.Image", block_type: str, model_id: str) -> str:
         """Отправляет блок в облачную модель через settings API-ключи."""
