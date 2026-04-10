@@ -134,6 +134,82 @@ When `bbox` is in the PATCH payload, `processing.py` re-crops `blocks/{block_id}
 
 `backend/shared/` and `shared/` exist separately — the Dockerfile bind-mounts `./shared` to `/app/shared`. The backend's `backend/shared/schemas.py` is the canonical version actually used at runtime; `shared/schemas.py` at repo root is a lighter copy. Keep them in sync when modifying schemas.
 
+## Session log — 2026-04-10
+
+### ✅ Оптимизация обработки блоков: управление VRAM + Python API для TexTeller + единый промпт для таблиц
+
+**Проблемы в начале:**
+1. TexTeller вызывался через CLI subprocess вместо Python API — медленно, нет переиспользования модели в памяти
+2. После обработки таблиц dots.ocr выгружался на CPU, потом не мог быть переиспользован
+3. dots.ocr + Ollama одновременно в VRAM вызывали OOM (13 GB vs 24 GB RTX 4090)
+4. Ollama модели не выгружались после batch-обработки блоков, оставляя VRAM занятым
+5. Таблицы, обработанные Ollama или облачными моделями, использовали разные промпты — результаты отличались от dots.ocr
+6. Рендеринг формул в Viewer использовал `st.latex()` вместо KaTeX — не все форматы поддерживались
+
+**Реализовано:**
+
+**1. TexTeller Python API вместо CLI** (`backend/pipeline/formula_ocr.py`):
+   - Заменён subprocess на `texteller.load_model()` + `texteller.img2latex()` с device на CUDA
+   - Модель загружается один раз при инициализации `FormulaOCR`
+   - CLI fallback остаётся на случай если Python API недоступен (timeout 20s)
+   - Вывод LaTeX нормализуется через `_normalize_latex()` в `$$...$$`
+
+**2. Маршрутизация формул по model_id** (`backend/pipeline/ocr_pipeline.py`):
+   - `model_id="gpt4o"/"claude"/"openrouter"` → облако
+   - `model_id="ollama"` → Ollama с промптом формулы через `_formula_via_ollama()`
+   - Дефолt → TexTeller Python API
+   - Добавлены методы `_formula_via_ollama()` + `_normalize_latex()` для унификации
+
+**3. dots.ocr остаётся на GPU** (`backend/pipeline/ocr_pipeline.py`):
+   - `_unload_table_model()` → no-op (dots.ocr остаётся в VRAM 24GB доступно на RTX 4090)
+   - `unload_all_models()` → вызывает только `unload_ollama()`, не трогает dots.ocr
+   - В `process_document()` убран offload при смене семейства моделей из "dotsocr" → "ollama"
+
+**4. Управление VRAM при обработке батча** (`backend/pipeline/ocr_pipeline.py`):
+   - Новый `process_document()` с `get_model_family()` для классификации: `local`/`dotsocr`/`cloud`/`ollama`
+   - Блоки сортируются по семейству + page_num — таблицы вместе (на dotsocr), фигуры вместе (на Ollama)
+   - При смене семейства только активная семья выгружается (Ollama через `keep_alive: 0`)
+   - Промежуточный flush на диск каждые 10 блоков
+   - В конце: полная выгрузка `unload_all_models()`
+
+**5. Ollama API для явной выгрузки** (`backend/pipeline/ocr_pipeline.py`):
+   - `unload_ollama()` → отправляет `keep_alive: 0` всем трём моделям (FALLBACK + FIGURE + FORMULA)
+   - Первый вызов Ollama после выгрузки перезагружает нужную модель автоматически
+
+**6. Единый промпт для таблиц** (`backend/pipeline/ocr_pipeline.py`, `backend/pipeline/fallback_api.py`):
+   - `DOTS_SYSTEM_PROMPT` + `DOTS_USER_PROMPT` экспортированы из `table_recognizer.py`
+   - Ollama (`fallback_api._process_table()`) использует тот же промпт что dots.ocr
+   - Облачные модели (`_process_cloud()`) → system field (Claude) или system message (GPT/OpenRouter)
+   - Результат таблиц постпроцессируется через `_clean_html()` + `_add_table_styles()`
+
+**7. Защита от device mismatch** (`backend/pipeline/table_recognizer.py`):
+   - В начале `recognize()` → проверка device, если CPU → `.cuda()` с логированием
+
+**8. KaTeX рендеринг формул в Viewer** (`frontend/pages/2_Viewer.py`):
+   - Заменён `st.latex()` на `components.html()` с KaTeX CDN
+   - Поддерживает `$$...$$`, `$...$`, `\[..\]`, `\(...\)` через `renderMathInElement()`
+   - `throwOnError: false` → graceful fallback если LaTeX невалидный
+
+**9. OLLAMA_FORMULA_MODEL в .env**:
+   - Добавлена переменная для выбора модели формул (дефолт: qwen2.5vl:3b)
+   - `.env` + `.env.example` обновлены
+
+**10. Выгрузка после одного блока** (`backend/pipeline/ocr_pipeline.py`):
+   - `process_single_block()` → вызывает `unload_all_models()` в конце
+   - Для детального режима обработки одного блока VRAM очищается полностью
+
+**Результат:**
+- ✅ TexTeller работает через Python API, модель в памяти один раз
+- ✅ dots.ocr остаётся на GPU, не выгружается между блоками
+- ✅ VRAM оптимизирован: 5.8 GB dots.ocr + место для Ollama
+- ✅ Блоки обрабатываются по семействам — минимальные переключения моделей
+- ✅ Ollama выгружается через `keep_alive: 0` после каждого батча
+- ✅ Таблицы от Ollama/облака идентичны dots.ocr по качеству (единый промпт)
+- ✅ Формулы рендерятся правильно в Viewer (KaTeX вместо Streamlit)
+- ✅ Протестировано: backend стартует чисто, здравый логи
+
+---
+
 ## Session log — 2026-04-07
 
 ### ✅ Быстрый режим обработки: локальные + облачные парсеры
@@ -687,6 +763,7 @@ Defined in `.env.example`. Key ones:
 OLLAMA_BASE_URL=http://ollama:11434
 OLLAMA_FALLBACK_MODEL=qwen2.5vl:7b          # fallback для text/formula/table
 OLLAMA_FIGURE_MODEL=qwen2.5vl:3b            # figure обработка (быстро)
+OLLAMA_FORMULA_MODEL=qwen2.5vl:3b           # formula обработка (структурированный вывод)
 PDF_DPI=300
 BLOCK_CONFIDENCE_THRESHOLD=0.3
 MIN_PAIRS_FOR_FINETUNE=50

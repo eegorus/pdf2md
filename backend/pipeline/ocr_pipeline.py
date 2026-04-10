@@ -112,17 +112,18 @@ class OCRPipeline:
 
         blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
         logger.info(f"✅ OCR блока {block_id}: {len(output)} символов")
+
+        self.unload_all_models()
         return block
 
     def process_document(self, doc_id: str, model_choices: dict | None = None, on_progress=None) -> dict:
         """
-        Запускает OCR для всех блоков документа.
+        OCR всех блоков с умным управлением VRAM при смене моделей.
 
-        Читает results/{doc_id}/blocks.json
-        Обновляет поле 'output' у каждого блока
-        Сохраняет обратно в blocks.json
-
-        Возвращает статистику: {'processed': N, 'errors': M, 'by_type': {...}}
+        Блоки сортируются по семейству модели (local → dotsocr → cloud → ollama),
+        чтобы минимизировать swap между VRAM моделями.
+        При смене семейства предыдущая модель выгружается.
+        После завершения всего батча — выгрузка всех моделей.
         """
         blocks_file = self.data_dir / "results" / doc_id / "blocks.json"
         if not blocks_file.exists():
@@ -130,47 +131,78 @@ class OCRPipeline:
 
         blocks = json.loads(blocks_file.read_text())
 
-        # Защита от двойного запуска — пропускаем уже обработанные блоки
         already_done = sum(1 for b in blocks if b.get("status") == "ocr_done")
         if already_done == len(blocks):
-            logger.warning(f"OCR уже выполнен для {doc_id}, пропускаем")
+            logger.warning(f"OCR {doc_id}: все блоки уже обработаны, пропускаем")
             return {"processed": already_done, "errors": 0, "by_type": {}}
 
-        logger.info(f"OCR pipeline: {doc_id} — {len(blocks)} блоков (уже готово: {already_done})")
+        logger.info(f"OCR pipeline {doc_id}: {len(blocks)} блоков (уже готово: {already_done})")
 
-        # Сортируем: сначала text/table (EasyOCR + dots.ocr), потом figure (Ollama)
-        # Это позволяет выгрузить dots.ocr один раз перед запуском Ollama
-        _block_order = ["text", "table_simple", "table_complex", "table", "formula", "figure"]
-        blocks_sorted = sorted(
-            blocks,
-            key=lambda b: _block_order.index(b.get("block_type", "text"))
-            if b.get("block_type") in _block_order else 99
+        # Семейства моделей для управления VRAM
+        NEEDS_DOTSOCR = {"table", "table_simple", "table_complex"}
+
+        def get_model_family(block_type: str, mid: str | None) -> str:
+            """Возвращает 'local' | 'dotsocr' | 'cloud' | 'ollama'."""
+            if mid in ("gpt4o", "claude", "openrouter"):
+                return "cloud"
+            if mid == "ollama":
+                return "ollama"
+            if block_type in NEEDS_DOTSOCR and mid != "ollama_7b":
+                return "dotsocr"
+            if block_type == "figure":
+                return "ollama"
+            # formula: TexTeller (local/CPU), formula с ollama_7b → ollama
+            if block_type == "formula":
+                return "local"
+            return "local"
+
+        # Сортируем: сначала local/easyocr, потом dotsocr, потом cloud, потом ollama
+        # Внутри каждой группы — порядок страниц сохраняется
+        FAMILY_ORDER = {"local": 0, "dotsocr": 1, "cloud": 2, "ollama": 3}
+
+        pending = [b for b in blocks if b.get("status") != "ocr_done"]
+        done    = [b for b in blocks if b.get("status") == "ocr_done"]
+
+        pending_sorted = sorted(
+            pending,
+            key=lambda b: (
+                FAMILY_ORDER.get(
+                    get_model_family(
+                        b.get("block_type", "text"),
+                        (model_choices or {}).get(b.get("block_type", "text"))
+                    ), 99
+                ),
+                b.get("page_num", 0),
+            )
         )
 
-        stats     = {"processed": 0, "errors": 0, "by_type": {}}
-        last_type = None
+        family_counts = {}
+        for b in pending_sorted:
+            fam = get_model_family(b.get("block_type", "text"),
+                                   (model_choices or {}).get(b.get("block_type", "text")))
+            family_counts[fam] = family_counts.get(fam, 0) + 1
+        logger.info("Порядок обработки: " + ", ".join(f"{k}={v}" for k, v in family_counts.items()))
 
-        for i, block in enumerate(blocks_sorted):
+        stats         = {"processed": already_done, "errors": 0, "by_type": {}}
+        active_family = None
+
+        for i, block in enumerate(pending_sorted):
             block_type = block.get("block_type", "text")
             image_path = block.get("image_path", "")
+            model_id   = (model_choices or {}).get(block_type)
+            needed_fam = get_model_family(block_type, model_id)
 
-            # При переходе к figure — offload dots.ocr только если модель тяжёлая
-            if block_type == "figure" and last_type != "figure":
-                figure_model = (model_choices or {}).get("figure",
-                    getattr(self.figure_proc, "model", "qwen2.5vl:3b"))
-                # resolve model_id alias → actual model name
-                if figure_model == "ollama_7b":
-                    figure_model = os.getenv("OLLAMA_FALLBACK_MODEL", "qwen2.5vl:7b")
-                elif figure_model in ("ollama_3b", "ollama"):
-                    figure_model = os.getenv("OLLAMA_FIGURE_MODEL", "qwen2.5vl:3b")
+            # Управление VRAM при смене семейства моделей
+            if active_family is not None and active_family != needed_fam:
+                logger.info(f"Смена модели: {active_family} → {needed_fam}, выгружаем {active_family}")
+                import torch, gc
+                if active_family == "ollama":
+                    self.unload_ollama()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
 
-                if figure_model in HEAVY_FIGURE_MODELS:
-                    self._unload_table_model()
-                    logger.info(f"dots.ocr offloaded перед {figure_model}")
-                else:
-                    logger.info(f"dots.ocr остаётся на GPU, {figure_model} не требует offload")
-
-            last_type = block_type
+            active_family = needed_fam
 
             if not image_path or not Path(image_path).exists():
                 logger.warning(f"Блок {block['block_id']}: файл не найден")
@@ -182,27 +214,27 @@ class OCRPipeline:
                 continue
 
             try:
-                image    = Image.open(image_path).convert("RGB")
-                model_id = (model_choices or {}).get(block_type)
-                output   = self._process_block(image, block_type, model_id=model_id)
+                image  = Image.open(image_path).convert("RGB")
+                output = self._process_block(image, block_type, model_id=model_id)
 
                 block["output"] = output
-                # Сохраняем оригинал один раз — original_output нужен для training pairs
                 if not block.get("original_output"):
                     block["original_output"] = output
                 block["status"] = "ocr_done"
                 stats["processed"] += 1
-                stats["by_type"][block_type] = (
-                    stats["by_type"].get(block_type, 0) + 1
-                )
+                stats["by_type"][block_type] = stats["by_type"].get(block_type, 0) + 1
 
-                # Очищаем VRAM после каждой таблицы — dots.ocr жадный
-                if block_type in {"table", "table_simple", "table_complex"}:
+                # Очистка VRAM после каждой таблицы — dots.ocr жадный
+                if block_type in NEEDS_DOTSOCR:
                     import torch
-                    torch.cuda.empty_cache()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                 if (i + 1) % 10 == 0:
-                    logger.info(f"  Обработано {i+1}/{len(blocks_sorted)} блоков...")
+                    logger.info(f"  Обработано {i+1}/{len(pending_sorted)} блоков...")
+                    blocks_file.write_text(
+                        json.dumps(done + pending_sorted, ensure_ascii=False, indent=2)
+                    )
                     if on_progress:
                         on_progress(stats["processed"], stats["errors"])
 
@@ -212,14 +244,18 @@ class OCRPipeline:
                 block["status"] = "error"
                 stats["errors"] += 1
 
-        # Сохраняем обновлённые блоки (порядок из blocks_sorted — по типу)
+        # Финальный сброс на диск
         blocks_file.write_text(
-            json.dumps(blocks_sorted, ensure_ascii=False, indent=2)
+            json.dumps(done + pending_sorted, ensure_ascii=False, indent=2)
         )
         if on_progress:
             on_progress(stats["processed"], stats["errors"])
 
-        # Обновляем статус документа
+        # Выгружаем все модели из VRAM
+        logger.info("OCR завершён. Выгружаем все модели из VRAM...")
+        self.unload_all_models()
+
+        # Обновляем метаданные
         meta_file = self.data_dir / "uploads" / doc_id / "meta.json"
         if meta_file.exists():
             meta = json.loads(meta_file.read_text())
@@ -227,28 +263,45 @@ class OCRPipeline:
             meta["ocr_stats"] = stats
             meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
 
-        logger.info(
-            f"✅ OCR завершён: {doc_id} — "
-            f"ok={stats['processed']}, err={stats['errors']}"
-        )
+        logger.info(f"✅ OCR {doc_id}: ok={stats['processed']}, err={stats['errors']}")
         return stats
 
     def _unload_table_model(self):
-        """Выгружаем dots.ocr из VRAM перед вызовом тяжёлой Ollama-модели."""
+        """dots.ocr остаётся в VRAM — 6 GB, места достаточно на RTX 4090 (24 GB).
+        Метод оставлен для совместимости, но ничего не делает."""
+        logger.debug("_unload_table_model: пропускаем (dots.ocr остаётся на GPU)")
+
+    def unload_ollama(self) -> None:
+        """Принудительно выгружает Ollama-модели из VRAM через keep_alive: 0."""
+        import httpx
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
+        models_to_unload = {
+            os.getenv("OLLAMA_FALLBACK_MODEL", "qwen2.5vl:7b"),
+            os.getenv("OLLAMA_FIGURE_MODEL",   "qwen2.5vl:3b"),
+            os.getenv("OLLAMA_FORMULA_MODEL",  "qwen2.5vl:3b"),
+        }
+        for model in models_to_unload:
+            try:
+                httpx.post(
+                    f"{ollama_url}/api/generate",
+                    json={"model": model, "keep_alive": 0},
+                    timeout=10,
+                )
+                logger.info(f"Ollama: {model} выгружен из VRAM")
+            except Exception as e:
+                logger.warning(f"Ollama unload {model}: {e}")
+
+    def unload_all_models(self) -> None:
+        """Выгружает Ollama из VRAM. dots.ocr остаётся загруженным на GPU."""
         import torch, gc
-        if hasattr(self.models, "table_model") and self.models.table_model is not None:
-            self.models.table_model.cpu()
-            gc.collect()
+        self.unload_ollama()
+        if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-            logger.info(f"VRAM после offload dots.ocr: {torch.cuda.memory_allocated()/1e9:.1f}GB allocated")
-
-    def _reload_table_model(self):
-        """Возвращаем dots.ocr на GPU (для будущих сценариев)."""
-        import torch
-        if hasattr(self.models, "table_model") and self.models.table_model is not None:
-            self.models.table_model.to("cuda")
-            logger.debug("dots.ocr возвращён на GPU")
+        gc.collect()
+        if torch.cuda.is_available():
+            used = torch.cuda.memory_allocated() / 1e9
+            logger.info(f"VRAM после выгрузки Ollama: {used:.1f} GB PyTorch allocated")
 
     def _process_block(self, image: Image.Image, block_type: str, model_id: str | None = None) -> str:
         logger.debug(f"[_process_block] type={block_type!r} model_id={model_id!r}")
@@ -353,6 +406,11 @@ class OCRPipeline:
     def _process_cloud(self, image: "Image.Image", block_type: str, model_id: str) -> str:
         """Отправляет блок в облачную модель через settings API-ключи."""
         import base64, io, httpx, json
+        from pipeline.table_recognizer import (
+            DOTS_SYSTEM_PROMPT, DOTS_USER_PROMPT, TableRecognizer,
+        )
+
+        TABLE_BLOCK_TYPES = {"table", "table_simple", "table_complex"}
 
         settings_file = self.data_dir / "settings.json"
         keys = {}
@@ -363,20 +421,37 @@ class OCRPipeline:
         image.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode()
 
-        type_prompts = {
-            "text":          "Extract all text from this image. Return plain text only.",
-            "figure":        "Describe this image/figure in detail for a technical document.",
-            "table_simple":  "Convert this table to Markdown table format.",
-            "table_complex": "Convert this complex table to HTML format preserving all merged cells.",
-            "table":         "Convert this table to HTML format.",
-            "formula":       "Convert this mathematical formula to LaTeX. Return only the LaTeX code.",
-        }
-        prompt = type_prompts.get(block_type, "Extract content from this image.")
+        is_table = block_type in TABLE_BLOCK_TYPES
+
+        # Для таблиц используем тот же промпт что и dots.ocr
+        if is_table:
+            system_prompt = DOTS_SYSTEM_PROMPT
+            user_prompt   = DOTS_USER_PROMPT
+        else:
+            system_prompt = None
+            user_prompt   = {
+                "text":    "Extract all text from this image. Return plain text only.",
+                "figure":  "Describe this image/figure in detail for a technical document.",
+                "formula": "Convert this mathematical formula to LaTeX. Return only the LaTeX code.",
+            }.get(block_type, "Extract content from this image.")
+
+        def postprocess(raw: str) -> str:
+            if not is_table:
+                return raw
+            cleaned = TableRecognizer._clean_html(raw)
+            return TableRecognizer._add_table_styles(cleaned)
 
         if model_id == "openrouter":
             api_key = keys.get("openrouter", "")
             if not api_key:
                 raise ValueError("OpenRouter API key не задан — добавь в Settings")
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": [
+                {"type": "text",      "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            ]})
             r = httpx.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={
@@ -384,60 +459,53 @@ class OCRPipeline:
                     "HTTP-Referer":  "https://prms-local",
                     "X-Title":       "PRMS Table Extractor",
                 },
-                json={
-                    "model": "openai/gpt-4o",
-                    "messages": [{"role": "user", "content": [
-                        {"type": "text",      "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                    ]}],
-                    "max_tokens": 2048,
-                },
+                json={"model": "openai/gpt-4o", "messages": messages, "max_tokens": 4096},
                 timeout=60,
             )
             r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"]
+            return postprocess(r.json()["choices"][0]["message"]["content"])
 
         elif model_id == "gpt4o":
             api_key = keys.get("openai", "")
             if not api_key:
                 raise ValueError("OpenAI API key не задан")
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": [
+                {"type": "text",      "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            ]})
             r = httpx.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": "gpt-4o",
-                    "messages": [{"role": "user", "content": [
-                        {"type": "text",      "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                    ]}],
-                    "max_tokens": 2048,
-                },
+                json={"model": "gpt-4o", "messages": messages, "max_tokens": 4096},
                 timeout=60,
             )
             r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"]
+            return postprocess(r.json()["choices"][0]["message"]["content"])
 
         elif model_id == "claude":
             api_key = keys.get("anthropic", "")
             if not api_key:
                 raise ValueError("Anthropic API key не задан")
+            payload = {
+                "model":      "claude-3-5-sonnet-20241022",
+                "max_tokens": 4096,
+                "messages": [{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
+                    {"type": "text",  "text": user_prompt},
+                ]}],
+            }
+            if system_prompt:
+                payload["system"] = system_prompt
             r = httpx.post(
                 "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key":         api_key,
-                    "anthropic-version": "2023-06-01",
-                },
-                json={
-                    "model":      "claude-3-5-sonnet-20241022",
-                    "max_tokens": 2048,
-                    "messages": [{"role": "user", "content": [
-                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
-                        {"type": "text",  "text": prompt},
-                    ]}],
-                },
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                json=payload,
                 timeout=60,
             )
             r.raise_for_status()
-            return r.json()["content"][0]["text"]
+            return postprocess(r.json()["content"][0]["text"])
 
         raise ValueError(f"Неизвестная облачная модель: {model_id}")

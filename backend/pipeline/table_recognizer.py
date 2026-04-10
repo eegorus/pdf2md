@@ -95,6 +95,15 @@ class TableRecognizer:
         t0 = time.perf_counter()
 
         image = image.convert("RGB")
+
+        # Защита от device mismatch после возможного частичного offload
+        try:
+            device = next(self.model.parameters()).device
+            if device.type != "cuda":
+                logger.warning(f"dots.ocr оказался на {device}, возвращаем на CUDA")
+                self.model = self.model.cuda()
+        except Exception:
+            pass
         w, h = image.size
         mpx = w * h / 1_000_000
         logger.info(f"[PROFILE] image size={w}x{h} ({mpx:.2f} MP)")

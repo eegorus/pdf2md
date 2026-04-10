@@ -7,7 +7,7 @@ fallback_api.py — Ollama как универсальный fallback для л�
 - EasyOCR дал пустой результат → текст → Ollama
 - Любой другой сбой специализированного модуля
 
-Промпты адаптированы под каждый тип блока.
+Для таблиц использует тот же промпт что и dots.ocr (DOTS_SYSTEM_PROMPT / DOTS_USER_PROMPT).
 """
 import base64
 import io
@@ -17,22 +17,21 @@ import os
 import httpx
 from PIL import Image
 
+from pipeline.table_recognizer import (
+    DOTS_SYSTEM_PROMPT,
+    DOTS_USER_PROMPT,
+    TableRecognizer,
+)
+
 logger = logging.getLogger("prms.fallback_api")
 
-# Промпты для каждого типа блока
+TABLE_BLOCK_TYPES = {"table", "table_simple", "table_complex"}
+
 PROMPTS = {
     "text": (
         "Extract all text from this image exactly as written. "
         "Preserve line breaks and formatting. "
         "Return only the text content, no explanations."
-    ),
-    "table": (
-        "Convert this table image to HTML format. "
-        "Use <table>, <tr>, <th>, <td> tags. "
-        "Preserve all cell content, merged cells (use colspan/rowspan attributes), "
-        "and multi-level headers exactly as shown. "
-        "Start your response with <table and end with </table>. "
-        "Return only the HTML table, no explanations, no markdown code blocks."
     ),
     "formula": (
         "Convert this mathematical formula to LaTeX. "
@@ -58,56 +57,16 @@ class FallbackAPI:
         image.save(buf, format="PNG")
         return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-    def process(self, image: Image.Image, block_type: str) -> str:
-        """
-        Обрабатывает блок через Ollama.
-
-        block_type: text / table / formula / figure
-        Возвращает строку с результатом.
-        """
-        image   = image.convert("RGB")
-        prompt  = PROMPTS.get(block_type, PROMPTS["text"])
-        img_b64 = self._to_base64(image)
-
-        num_predict = 4096 if block_type == "table" else 1024
-        payload = {
-            "model":  self.model,
-            "prompt": prompt,
-            "images": [img_b64],
-            "stream": False,
-            "options": {
-                "temperature": 0.05,
-                "num_predict": num_predict,
-            },
-        }
-
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                resp = client.post(
-                    f"{self.ollama_url}/api/generate",
-                    json=payload,
-                )
-                resp.raise_for_status()
-                result = resp.json().get("response", "").strip()
-                if block_type == "table":
-                    from pipeline.table_recognizer import TableRecognizer
-                    result = TableRecognizer._clean_html(result)
-                    result = TableRecognizer._add_table_styles(result)
-                return result
-
-        except httpx.TimeoutException:
-            logger.error(f"Fallback timeout ({self.timeout}s) для {block_type}")
-            return f"[{block_type}: timeout]"
-        except Exception as e:
-            logger.error(f"Fallback error ({block_type}): {e}")
-            return f"[{block_type}: error — {type(e).__name__}]"
-
-    def process_with_model(self, image: Image.Image, block_type: str,
-                           model: str | None = None, prompt: str | None = None) -> str:
-        """Ollama с конкретной моделью и промптом (для формул, фигур и т.п.)."""
-        image   = image.convert("RGB")
+    def _call_ollama(
+        self,
+        image: Image.Image,
+        prompt: str,
+        system: str | None = None,
+        model: str | None = None,
+        num_predict: int = 2048,
+    ) -> str | None:
+        """Базовый вызов Ollama generate API. Возвращает текст или None при ошибке."""
         model   = model or self.model
-        prompt  = prompt or PROMPTS.get(block_type, PROMPTS["text"])
         img_b64 = self._to_base64(image)
 
         payload = {
@@ -115,13 +74,63 @@ class FallbackAPI:
             "prompt": prompt,
             "images": [img_b64],
             "stream": False,
-            "options": {"temperature": 0.05, "num_predict": 512, "num_ctx": 2048},
+            "options": {
+                "temperature": 0.05,
+                "num_predict": num_predict,
+                "num_ctx":     4096,
+            },
         }
+        if system:
+            payload["system"] = system
+
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 resp = client.post(f"{self.ollama_url}/api/generate", json=payload)
                 resp.raise_for_status()
-                return resp.json().get("response", "").strip()
+                result = resp.json().get("response", "").strip()
+                logger.debug(f"Ollama {model} [{len(result)} chars]: {result[:80]!r}")
+                return result or None
         except Exception as e:
-            logger.error(f"process_with_model ({model}): {e}")
-            return f"formula error: {type(e).__name__}"
+            logger.error(f"Ollama {model}: {e}")
+            return None
+
+    def process(self, image: Image.Image, block_type: str) -> str:
+        """Обрабатывает блок через Ollama. Для таблиц использует промпт dots.ocr."""
+        image = image.convert("RGB")
+
+        if block_type in TABLE_BLOCK_TYPES:
+            return self._process_table(image)
+
+        prompt = PROMPTS.get(block_type, PROMPTS["text"])
+        result = self._call_ollama(image, prompt=prompt)
+        if result is None:
+            return f"[{block_type}: timeout]"
+        return result
+
+    def _process_table(self, image: Image.Image) -> str:
+        """Обрабатывает таблицу с промптом dots.ocr → нормализует HTML."""
+        raw = self._call_ollama(
+            image,
+            prompt=DOTS_USER_PROMPT,
+            system=DOTS_SYSTEM_PROMPT,
+            num_predict=4096,
+        )
+        if not raw:
+            return "[table: timeout]"
+        cleaned = TableRecognizer._clean_html(raw)
+        return TableRecognizer._add_table_styles(cleaned) if cleaned else raw
+
+    def process_with_model(
+        self,
+        image: Image.Image,
+        block_type: str,
+        model: str | None = None,
+        prompt: str | None = None,
+    ) -> str:
+        """Ollama с конкретной моделью и промптом (для формул, фигур и т.п.)."""
+        image  = image.convert("RGB")
+        prompt = prompt or PROMPTS.get(block_type, PROMPTS["text"])
+        result = self._call_ollama(image, prompt=prompt, model=model, num_predict=512)
+        if result is None:
+            return f"formula error: timeout"
+        return result
