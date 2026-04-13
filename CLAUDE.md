@@ -755,6 +755,47 @@ models.table_model = torch.compile(
 **Отложено (не приоритет):**
 - **Table merge** — заголовок таблицы при детекции разбивается в отдельный блок, нужен анализ bbox
 
+## Session log — 2026-04-13
+
+### ✅ OCR cancellation + canvas click replay guard
+
+**Проблемы в начале:**
+1. При запуске OCR модальное окно оставалось открытым — требовалось ручное закрытие
+2. Пользователь не мог отменить долгую обработку (особенно для сложных таблиц — 70+ сек)
+3. Canvas click replay: клик по блоку срабатывал повторно при следующем rerun → нажатие кнопок деселекта игнорировалось
+
+**Реализовано:**
+
+**1. Backend: cancel endpoint + флаг в pipeline** (`backend/routers/processing.py`, `backend/pipeline/ocr_pipeline.py`):
+   - Добавлен `cancel_requested: False` флаг в `_ocr_status[doc_id]` при старте OCR
+   - Новый endpoint `POST /{doc_id}/ocr/cancel` — устанавливает флаг отмены
+   - Callback `on_cancel_check()` передаётся в `pipeline.process_document()`
+   - В начале каждой итерации цикла по блокам — проверка флага
+   - При отмене: сохраняется частичный результат в `blocks.json`, возвращается `{"status": "cancelled", ...}`
+   - Статус `cancelled` обрабатывается отдельно от `done` и `error`
+
+**2. Frontend: модальное окно + UI отмены** (`frontend/pages/2_Viewer.py`):
+   - **Автозакрытие диалога**: `st.session_state["viewer_model_dialog_open"] = False` перед `st.rerun()` после успешного запуска OCR
+   - Progress bar: `st.progress(pct, text=f"Обработано блоков: {processed} / {total}")` вместо `st.info()`
+   - **Кнопка отмены**: "⏹ Остановить OCR" под прогресс-баром → `POST /ocr/cancel` с сообщением "⏸ Отмена отправлена…"
+   - **Статус cancelled**: новая ветка `elif _status == "cancelled"` → показывает "⏹ OCR прерван" и очищает polling
+
+**3. Canvas click replay guard** (`frontend/pages/2_Viewer.py`):
+   - Добавлен `canvas_last_coord: (canvas_version, x, y)` в session_state для отслеживания последних обработанных координат
+   - Логика: первый клик с новыми coords → обработка, запоминание; 
+     следующие reruns с теми же coords → игнорирование (result = None)
+   - Ключ включает `canvas_version` → сбрасывается автоматически при смене страницы/режима/документа
+   - Решает: нажата кнопка деселекта → `viewer_selected_block = None` → canvas не срабатывает со старыми coords → кнопка работает
+
+**Результат:**
+- ✅ OCR прерывается нажатием кнопки (graceful stop после текущего блока)
+- ✅ Модальное окно закрывается автоматически → пользователь видит progress сразу
+- ✅ Canvas click больше не срабатывает на replay → button clicks работают надёжно
+- ✅ Частичные результаты сохраняются при отмене (пользователь может использовать обработанные блоки)
+- ✅ Протестировано: backend перезапустился, frontend обновился, синтаксис валиден
+
+---
+
 ## Environment variables
 
 Defined in `.env.example`. Key ones:
