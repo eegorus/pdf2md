@@ -393,7 +393,7 @@ class LayoutDetector:
         Формат имени: page_001_text_000.png
         """
         data_dir = Path(data_dir)
-        blocks_dir = data_dir / "blocks" / doc_id
+        blocks_dir = data_dir / "results" / doc_id / "blocks"
         blocks_dir.mkdir(parents=True, exist_ok=True)
 
         cropped = self.crop_block(image, block, padding)
