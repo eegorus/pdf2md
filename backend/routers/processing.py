@@ -267,7 +267,7 @@ async def start_ocr(doc_id: str, payload: dict = Body(default={})):
     blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
     total = len(json.loads(blocks_file.read_text())) if blocks_file.exists() else 0
 
-    _ocr_status[doc_id] = {"status": "running", "processed": 0, "total": total, "errors": 0}
+    _ocr_status[doc_id] = {"status": "running", "processed": 0, "total": total, "errors": 0, "cancel_requested": False}
 
     async def _run():
         try:
@@ -277,15 +277,26 @@ async def start_ocr(doc_id: str, payload: dict = Body(default={})):
                 _ocr_status[doc_id]["processed"] = processed
                 _ocr_status[doc_id]["errors"]    = errors
 
+            def on_cancel_check() -> bool:
+                return _ocr_status.get(doc_id, {}).get("cancel_requested", False)
+
             stats = await run_in_threadpool(
-                pipeline.process_document, doc_id, model_choices, on_progress
+                pipeline.process_document, doc_id, model_choices, on_progress, on_cancel_check
             )
-            _ocr_status[doc_id].update({
-                "status":    "done",
-                "processed": stats.get("processed", 0),
-                "errors":    stats.get("errors", 0),
-                "by_type":   stats.get("by_type", {}),
-            })
+            if stats.get("status") == "cancelled":
+                _ocr_status[doc_id].update({
+                    "status":    "cancelled",
+                    "processed": stats.get("processed", 0),
+                    "errors":    stats.get("errors", 0),
+                    "by_type":   stats.get("by_type", {}),
+                })
+            else:
+                _ocr_status[doc_id].update({
+                    "status":    "done",
+                    "processed": stats.get("processed", 0),
+                    "errors":    stats.get("errors", 0),
+                    "by_type":   stats.get("by_type", {}),
+                })
         except Exception as e:
             logger.error(f"OCR фоновая задача ({doc_id}): {e}", exc_info=True)
             _ocr_status[doc_id]["status"]    = "error"
@@ -308,6 +319,16 @@ async def get_ocr_status(doc_id: str):
                         "total": len(blocks), "errors": 0}
         return {"status": "idle", "processed": 0, "total": 0, "errors": 0}
     return status
+
+
+@router.post("/{doc_id}/ocr/cancel", summary="Отмена OCR")
+async def cancel_ocr(doc_id: str):
+    """Устанавливает флаг отмены для бегущего OCR. Pipeline проверяет его на каждом блоке."""
+    entry = _ocr_status.get(doc_id)
+    if entry and entry.get("status") == "running":
+        entry["cancel_requested"] = True
+        return {"doc_id": doc_id, "status": "cancel_requested"}
+    return {"doc_id": doc_id, "status": "not_running"}
 
 
 @router.post("/{doc_id}/export", summary="Экспорт результатов")

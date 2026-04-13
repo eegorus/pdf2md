@@ -207,6 +207,8 @@ _defaults = {
     "viewer_orig_h": 0,
     # Undo-стек (max 10)
     "undo_stack": [],                 # list of {action, block_id, snapshot?}
+    # Последние обработанные координаты canvas click (guard против replay)
+    "canvas_last_coord": None,        # (canvas_version, x, y) | None
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -413,6 +415,7 @@ def model_selection_dialog(doc_id: str, all_blocks: list):
                 if resp.status_code == 200:
                     result = resp.json()
                     if result.get("status") in ("started", "already_running"):
+                        st.session_state["viewer_model_dialog_open"] = False
                         st.session_state["ocr_polling"] = True
                         st.session_state["ocr_doc_id"]  = doc_id
                         st.rerun()
@@ -438,9 +441,31 @@ if st.session_state.get("ocr_polling") and st.session_state.get("ocr_doc_id") ==
             _status    = _ocr_st.get("status", "running")
 
             if _status == "running":
-                st.info(f"⏳ OCR выполняется: {_processed} / {_total} блоков...")
-                st.progress(_processed / _total)
+                _prog_pct = _processed / (_total or 1)
+                st.progress(_prog_pct, text=f"Обработано блоков: {_processed} / {_total}")
+                if st.button(
+                    "⏹ Остановить OCR",
+                    key="btn_cancel_ocr",
+                    type="secondary",
+                    help="Прерывает обработку после текущего блока. Уже обработанные блоки сохраняются.",
+                ):
+                    try:
+                        _cancel_resp = httpx.post(
+                            f"{BACKEND_URL}/processing/{doc_id}/ocr/cancel",
+                            timeout=5,
+                        )
+                        if _cancel_resp.status_code == 200:
+                            st.warning("⏸ Отмена отправлена, ожидаем завершения текущего блока...")
+                        else:
+                            st.error(f"Ошибка отмены: {_cancel_resp.status_code}")
+                    except Exception as _ce:
+                        st.error(str(_ce))
                 time.sleep(3)
+                st.rerun()
+            elif _status == "cancelled":
+                st.warning(f"⏹ OCR прерван. Обработано: {_processed}/{_total} блоков.")
+                st.session_state.pop("ocr_polling", None)
+                fetch_blocks.clear()
                 st.rerun()
             elif _status == "done":
                 st.success(
@@ -789,6 +814,17 @@ with col_main:
                 width=img_w,
                 key=f"viewer_{doc_id}_{st.session_state.viewer_page}",
             )
+            if coords is not None:
+                # Coord-guard: игнорируем replay старого значения компонента.
+                # Ключ включает canvas_version → автоматически сбрасывается
+                # при смене страницы/документа/режима.
+                _cv = st.session_state.viewer_canvas_version
+                _coord_key = (_cv, coords["x"], coords["y"])
+                if _coord_key == st.session_state.get("canvas_last_coord"):
+                    coords = None  # это replay — подавляем
+                else:
+                    st.session_state["canvas_last_coord"] = _coord_key
+
             if coords is not None:
                 ox = int(coords["x"] / scale)
                 oy = int(coords["y"] / scale)

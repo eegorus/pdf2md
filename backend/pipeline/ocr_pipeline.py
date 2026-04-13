@@ -116,7 +116,7 @@ class OCRPipeline:
         self.unload_all_models()
         return block
 
-    def process_document(self, doc_id: str, model_choices: dict | None = None, on_progress=None) -> dict:
+    def process_document(self, doc_id: str, model_choices: dict | None = None, on_progress=None, on_cancel_check=None) -> dict:
         """
         OCR всех блоков с умным управлением VRAM при смене моделей.
 
@@ -187,6 +187,15 @@ class OCRPipeline:
         active_family = None
 
         for i, block in enumerate(pending_sorted):
+            # Проверка отмены — первое что делаем в итерации
+            if on_cancel_check and on_cancel_check():
+                logger.info(f"OCR {doc_id} отменён на блоке {i}/{len(pending_sorted)}")
+                blocks_file.write_text(
+                    json.dumps(done + pending_sorted, ensure_ascii=False, indent=2)
+                )
+                return {"status": "cancelled", "processed": stats["processed"],
+                        "errors": stats["errors"], "by_type": stats["by_type"]}
+
             block_type = block.get("block_type", "text")
             image_path = block.get("image_path", "")
             model_id   = (model_choices or {}).get(block_type)
