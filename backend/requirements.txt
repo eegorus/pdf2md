@@ -52,3 +52,13 @@ docling>=2.15
 llama-parse>=0.6
 openai>=1.30
 anthropic>=0.40
+
+# Auth & Database
+sqlalchemy[asyncio]==2.0.*
+asyncpg==0.29.*
+alembic==1.13.*
+passlib[bcrypt]==1.7.*
+python-jose[cryptography]==3.3.*
+cryptography==42.*
+slowapi==0.1.*
+redis[asyncio]==5.0.*
