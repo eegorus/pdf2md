@@ -796,6 +796,102 @@ models.table_model = torch.compile(
 
 ---
 
+## Session log — 2026-04-17
+
+### ✅ Личный кабинет: PostgreSQL + Redis + Auth + Document Ownership
+
+Полный цикл аутентификации и авторизации добавлен к backend. Работа велась в двух сессиях подряд.
+
+---
+
+#### Инфраструктура БД (docker-compose.yml, .env)
+
+- Добавлены сервисы `postgres:16-alpine` и `redis:7-alpine` в `docker-compose.yml`
+- `backend.depends_on`: postgres (healthy) + redis (healthy)
+- Новые переменные окружения в `backend.environment`:
+  - `DATABASE_URL=postgresql+asyncpg://prms:${POSTGRES_PASSWORD}@postgres:5432/prms`
+  - `REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0`
+  - `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `REFRESH_TOKEN_EXPIRE_DAYS`, `FERNET_KEY`
+- `.env` дополнен реальными сгенерированными значениями для всех auth-переменных
+
+#### SQLAlchemy модели + Alembic (`backend/database/`)
+
+- **`database/engine.py`**: `create_async_engine` + `async_sessionmaker`, FastAPI Depends `get_db`
+- **`database/models.py`**: 4 ORM-модели с UUID PK:
+  - `User` — id, email, username, password_hash, is_active, is_admin, storage_quota_mb
+  - `Document` — id, docid, user_id (FK→users CASCADE), filename, status, file_size_bytes
+  - `UserApiKey` — user_id + provider (UniqueConstraint), encrypted_key
+  - `RefreshToken` — user_id, token_hash (unique), expires_at, revoked
+- **`database/crud/`**: полные CRUD-stubs для users, documents, api_keys
+- **`alembic/`**: настроен через `env.py`, который конвертирует asyncpg URL → psycopg2 для Alembic
+- **Миграция**: `d94a24685eb1_initial_schema.py` — создаёт все 4 таблицы + индексы
+
+#### Auth модуль (`backend/auth/`)
+
+- **`auth/password.py`**: `hash_password` / `verify_password` (bcrypt), `validate_password_strength`
+  - **Важно**: `bcrypt==4.0.1` жёстко зафиксирован — passlib 1.7.x несовместим с bcrypt ≥ 4.1 (убран `__about__`)
+- **`auth/jwt_handler.py`**: `create_access_token` / `create_refresh_token` (HS256, 30 мин / 14 дней)
+  - `jti: uuid4()` в каждом payload — иначе детерминированный HS256 даёт одинаковый хеш при совпадении timestamp → `IntegrityError` на `token_hash`
+- **`auth/encryption.py`**: Fernet encrypt/decrypt для API ключей в БД
+- **`auth/dependencies.py`**: `get_current_user` (OAuth2 Bearer → DB lookup), `verify_document_ownership` (admin bypass), `hash_token` (SHA-256)
+  - Параметр `doc_id: str` в `verify_document_ownership` — совпадает с именем path-параметра во всех роутерах
+
+#### Rate limiting + circular import fix
+
+- **`backend/limiter.py`**: shared slowapi `Limiter` — отдельный модуль, чтобы `auth.py` и `main.py` оба импортировали его без циклической зависимости
+- `main.py`: `app.state.limiter = limiter` + `add_exception_handler(RateLimitExceeded, ...)`
+
+#### /auth роутер (`backend/routers/auth.py`)
+
+4 эндпоинта:
+- `POST /auth/register` (5/hour): валидация пароля, уникальность email/username, bcrypt hash
+- `POST /auth/login` (10/minute): проверка пароля, выдача access + refresh токенов, запись `RefreshToken` в БД (SHA-256 hash)
+- `POST /auth/refresh`: ротация — старый токен отзывается (`revoked=True`), выдаётся новый
+- `POST /auth/logout`: отзыв refresh токена по hash
+
+Rate limit декораторы требуют `request: Request` первым параметром — это ограничение slowapi.
+
+#### Document Ownership (`backend/routers/`)
+
+- **`documents.py`**:
+  - `upload_document`: требует JWT, проверяет квоту хранилища (`storage_quota_mb`), создаёт запись в `documents` таблице
+  - `list_documents`: admin → все документы с диска; обычный юзер → только свои из БД
+  - `get_pages`, `page-image`, `block-image`: защищены `verify_document_ownership`
+  - `DELETE /{doc_id}`: ownership check + удаление из БД + все папки на диске
+- **`processing.py`**: `_doc: Document = Depends(verify_document_ownership)` добавлен ко всем 15 handlers с `doc_id`
+- **`quick.py`**: то же для `run` и `status`
+
+#### Скрипт миграции данных
+
+`backend/scripts/migrate_existing_docs.py` — привязывает существующие (до auth) документы к admin-пользователю:
+```bash
+docker compose exec backend python /app/scripts/migrate_existing_docs.py
+```
+Создаёт `admin@prms.local` / `Admin1234` если не существует, помечает `is_admin=True`.
+
+#### Пакеты (requirements.txt)
+
+```
+sqlalchemy[asyncio]==2.0.*   asyncpg==0.29.*   alembic==1.13.*
+passlib[bcrypt]==1.7.*       bcrypt==4.0.1     python-jose[cryptography]==3.3.*
+cryptography==42.*           slowapi==0.1.*    redis[asyncio]==5.0.*
+psycopg2-binary==2.9.*       email-validator>=2.1
+```
+
+`start.sh` запускает `pip install -r /app/requirements.txt` при каждом старте — это нужно потому что код монтируется bind-mount'ом, а пакеты в образе могут отставать.
+
+#### Ключевые ошибки, встреченные при внедрении
+
+| Ошибка | Причина | Решение |
+|--------|---------|---------|
+| `bcrypt has no attribute '__about__'` | passlib 1.7.x + bcrypt ≥ 4.1 | `bcrypt==4.0.1` в requirements |
+| `IntegrityError: duplicate key on token_hash` | HS256 детерминирован → одинаковый JWT при одном timestamp → одинаковый SHA-256 | `jti: uuid4()` в payload |
+| `ModuleNotFoundError: slowapi` | bind-mount не обновляет `/opt/conda` | `pip install -r` в `start.sh` |
+| `email-validator not installed` | pydantic `EmailStr` требует доп. пакет | добавлен `email-validator>=2.1` |
+| Alembic `permission denied` | файлы в контейнере принадлежат root | запись через `docker compose exec backend bash -c "cat > ..."` |
+
+---
+
 ## Environment variables
 
 Defined in `.env.example`. Key ones:
@@ -811,4 +907,15 @@ MIN_PAIRS_FOR_FINETUNE=50
 DATA_DIR=/app/data
 MODELS_DIR=/app/models
 PYTORCH_ALLOC_CONF=expandable_segments:True
+
+# Auth / Database (added 2026-04-17)
+DATABASE_URL=postgresql+asyncpg://prms:${POSTGRES_PASSWORD}@postgres:5432/prms
+REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+POSTGRES_PASSWORD=...                        # задать в .env
+REDIS_PASSWORD=...                           # задать в .env
+JWT_SECRET_KEY=...                           # 64-char hex, задать в .env
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REFRESH_TOKEN_EXPIRE_DAYS=14
+FERNET_KEY=...                               # base64url 32-byte key, задать в .env
 ```
