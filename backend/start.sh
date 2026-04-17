@@ -5,6 +5,10 @@ echo "============================================"
 echo "  PRMS Backend starting..."
 echo "============================================"
 
+echo "[0/3] Installing/updating Python packages..."
+pip install -r /app/requirements.txt -q 2>&1 | grep -E "(Successfully installed|ERROR)" || true
+echo "  OK packages up to date"
+
 echo "[1/3] GPU check..."
 python -c "
 import torch

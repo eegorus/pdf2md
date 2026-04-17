@@ -231,6 +231,10 @@ async def lifespan(app: FastAPI):
 # ═══════════════════════════════════════════════════════════════════════
 # FASTAPI APP
 # ═══════════════════════════════════════════════════════════════════════
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from limiter import limiter
+
 app = FastAPI(
     title="PRMS Table Extractor API",
     description=(
@@ -242,6 +246,9 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS: frontend обращается к backend по имени сервиса внутри Docker-сети
 app.add_middleware(
@@ -319,7 +326,9 @@ async def health_ollama():
 # РОУТЕРЫ (skeleton — логика добавляется на шагах 7–9)
 # ═══════════════════════════════════════════════════════════════════════
 from routers import documents, processing, training, quick, settings  # noqa: E402
+from routers.auth import router as auth_router
 
+app.include_router(auth_router)
 app.include_router(
     documents.router,
     prefix="/documents",

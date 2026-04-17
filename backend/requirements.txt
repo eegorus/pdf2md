@@ -64,3 +64,4 @@ cryptography==42.*
 slowapi==0.1.*
 redis[asyncio]==5.0.*
 psycopg2-binary==2.9.*
+email-validator>=2.1

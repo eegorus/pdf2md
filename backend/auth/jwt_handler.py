@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 
@@ -15,6 +16,7 @@ def create_access_token(user_id: str, email: str) -> str:
         "sub": str(user_id),
         "email": email,
         "type": "access",
+        "jti": str(uuid.uuid4()),
         "exp": expire,
         "iat": datetime.now(timezone.utc),
     }
@@ -30,6 +32,7 @@ def create_refresh_token(user_id: str) -> tuple[str, datetime]:
     payload = {
         "sub": str(user_id),
         "type": "refresh",
+        "jti": str(uuid.uuid4()),
         "exp": expire,
         "iat": datetime.now(timezone.utc),
     }
