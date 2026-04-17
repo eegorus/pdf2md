@@ -10,7 +10,10 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
+
+from auth.dependencies import verify_document_ownership
+from database.models import Document
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 
@@ -96,7 +99,11 @@ async def list_parsers():
 
 
 @router.post("/{doc_id}/run", summary="Запустить быстрый парсинг")
-async def run_quick(doc_id: str, payload: dict = Body(...)):
+async def run_quick(
+    doc_id: str,
+    payload: dict = Body(...),
+    _doc: Document = Depends(verify_document_ownership),
+):
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
     if not meta_file.exists():
         raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
@@ -146,7 +153,10 @@ async def run_quick(doc_id: str, payload: dict = Body(...)):
 
 
 @router.get("/{doc_id}/status", summary="Статус быстрого парсинга")
-async def quick_status(doc_id: str):
+async def quick_status(
+    doc_id: str,
+    _doc: Document = Depends(verify_document_ownership),
+):
     job = _jobs.get(doc_id)
     if not job:
         # Проверяем файл — вдруг уже готов с прошлого запуска

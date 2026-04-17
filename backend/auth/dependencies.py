@@ -39,17 +39,17 @@ async def get_current_active_user(
 
 
 async def verify_document_ownership(
-    docid: str,
+    doc_id: str,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> Document:
     """
-    Проверить что docid существует и принадлежит current_user.
+    Проверить что doc_id существует и принадлежит current_user.
     Admin может видеть любой документ.
     """
-    doc = await get_document_by_docid(session, docid)
+    doc = await get_document_by_docid(session, doc_id)
     if not doc:
-        raise HTTPException(status_code=404, detail=f"Документ {docid} не найден")
+        raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
     if str(doc.user_id) != str(current_user.id) and not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Доступ запрещён")
     return doc

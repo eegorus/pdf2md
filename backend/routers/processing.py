@@ -10,10 +10,13 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Body
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Body
 
 import sys
 sys.path.insert(0, "/app")
+
+from auth.dependencies import verify_document_ownership
+from database.models import Document
 
 # Хранилище статуса OCR-задач (in-memory, один на процесс)
 # { doc_id: {"status": "running"|"done"|"error", "processed": N, "total": N, "errors": N} }
@@ -114,7 +117,11 @@ def _run_layout_detection(doc_id: str):
 
 
 @router.post("/{doc_id}/start", summary="Запустить layout detection")
-async def start_processing(doc_id: str, background_tasks: BackgroundTasks):
+async def start_processing(
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    _doc: Document = Depends(verify_document_ownership),
+):
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
     if not meta_file.exists():
         raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
@@ -141,7 +148,10 @@ async def start_processing(doc_id: str, background_tasks: BackgroundTasks):
 
 
 @router.get("/{doc_id}/status", summary="Статус обработки")
-async def processing_status(doc_id: str):
+async def processing_status(
+    doc_id: str,
+    _doc: Document = Depends(verify_document_ownership),
+):
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
     if not meta_file.exists():
         raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
@@ -170,7 +180,10 @@ async def processing_status(doc_id: str):
 
 
 @router.get("/{doc_id}/results", summary="Результаты layout detection")
-async def get_results(doc_id: str):
+async def get_results(
+    doc_id: str,
+    _doc: Document = Depends(verify_document_ownership),
+):
     blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
     if not blocks_file.exists():
         raise HTTPException(
@@ -208,8 +221,12 @@ def _run_ocr(doc_id: str):
 
 
 @router.post("/{doc_id}/ocr-block/{block_id}", summary="OCR одного блока")
-async def ocr_single_block(doc_id: str, block_id: str,
-                            payload: dict = Body(default={})):
+async def ocr_single_block(
+    doc_id: str,
+    block_id: str,
+    payload: dict = Body(default={}),
+    _doc: Document = Depends(verify_document_ownership),
+):
     """
     Синхронный OCR для одного блока — результат сразу в ответе.
     Используется из Viewer по кнопке "▶ Этот блок".
@@ -240,7 +257,11 @@ async def ocr_single_block(doc_id: str, block_id: str,
 
 
 @router.post("/{doc_id}/ocr", summary="Запустить OCR всех блоков (фоновая задача)")
-async def start_ocr(doc_id: str, payload: dict = Body(default={})):
+async def start_ocr(
+    doc_id: str,
+    payload: dict = Body(default={}),
+    _doc: Document = Depends(verify_document_ownership),
+):
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
     if not meta_file.exists():
         raise HTTPException(status_code=404, detail=f"Документ {doc_id} не найден")
@@ -307,7 +328,10 @@ async def start_ocr(doc_id: str, payload: dict = Body(default={})):
 
 
 @router.get("/{doc_id}/ocr-status", summary="Статус OCR задачи")
-async def get_ocr_status(doc_id: str):
+async def get_ocr_status(
+    doc_id: str,
+    _doc: Document = Depends(verify_document_ownership),
+):
     status = _ocr_status.get(doc_id)
     if not status:
         blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
@@ -322,7 +346,10 @@ async def get_ocr_status(doc_id: str):
 
 
 @router.post("/{doc_id}/ocr/cancel", summary="Отмена OCR")
-async def cancel_ocr(doc_id: str):
+async def cancel_ocr(
+    doc_id: str,
+    _doc: Document = Depends(verify_document_ownership),
+):
     """Устанавливает флаг отмены для бегущего OCR. Pipeline проверяет его на каждом блоке."""
     entry = _ocr_status.get(doc_id)
     if entry and entry.get("status") == "running":
@@ -332,7 +359,11 @@ async def cancel_ocr(doc_id: str):
 
 
 @router.post("/{doc_id}/export", summary="Экспорт результатов")
-async def export_results(doc_id: str, format: str = "markdown"):
+async def export_results(
+    doc_id: str,
+    format: str = "markdown",
+    _doc: Document = Depends(verify_document_ownership),
+):
     """
     Экспортирует OCR результаты в файл.
 
@@ -398,7 +429,11 @@ async def export_results(doc_id: str, format: str = "markdown"):
 
 
 @router.get("/{doc_id}/export-file/{fmt}", summary="Скачать файл экспорта")
-async def download_export(doc_id: str, fmt: str):
+async def download_export(
+    doc_id: str,
+    fmt: str,
+    _doc: Document = Depends(verify_document_ownership),
+):
     """
     Отдаёт файл экспорта для скачивания браузером.
     Сначала вызови POST /{doc_id}/export?format=..., затем GET этот endpoint.
@@ -439,7 +474,11 @@ async def download_export(doc_id: str, fmt: str):
 
 
 @router.get("/{doc_id}/media/{filename}", summary="Serve block image")
-async def serve_media(doc_id: str, filename: str):
+async def serve_media(
+    doc_id: str,
+    filename: str,
+    _doc: Document = Depends(verify_document_ownership),
+):
     """
     Сервит PNG-файл из data/results/{doc_id}/blocks/{filename}.
     Используется Markdown Viewer для отображения изображений вместо base64.
@@ -462,7 +501,10 @@ async def serve_media(doc_id: str, filename: str):
 
 
 @router.get("/{doc_id}/export-zip", summary="Скачать ZIP с export.md + изображениями")
-async def export_zip(doc_id: str):
+async def export_zip(
+    doc_id: str,
+    _doc: Document = Depends(verify_document_ownership),
+):
     """
     Создаёт ZIP-архив для импорта в Obsidian:
       export.md          ← markdown с ./blocks/filename.png ссылками
@@ -508,7 +550,11 @@ async def export_zip(doc_id: str):
 
 
 @router.patch("/{doc_id}/export-file/markdown", summary="Сохранить отредактированный markdown")
-async def save_markdown(doc_id: str, payload: dict = Body(default={})):
+async def save_markdown(
+    doc_id: str,
+    payload: dict = Body(default={}),
+    _doc: Document = Depends(verify_document_ownership),
+):
     """Перезаписывает export.md отредактированным содержимым из фронтенда."""
     import shutil
 
@@ -529,7 +575,12 @@ async def save_markdown(doc_id: str, payload: dict = Body(default={})):
 
 # ─── PATCH: обновить статус/output конкретного блока ───────────────────────
 @router.patch("/{doc_id}/blocks/{block_id}")
-async def patch_block(doc_id: str, block_id: str, payload: dict = Body(...)):
+async def patch_block(
+    doc_id: str,
+    block_id: str,
+    payload: dict = Body(...),
+    _doc: Document = Depends(verify_document_ownership),
+):
     """
     Обновить статус или output блока.
     payload: {"status": "needs_review"} или {"output": "...", "status": "accepted"}
@@ -586,7 +637,11 @@ async def patch_block(doc_id: str, block_id: str, payload: dict = Body(...)):
     blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
     return {"block_id": block_id, "updated": True, **payload}
 @router.delete("/{doc_id}/blocks/{block_id}", summary="Удалить блок")
-async def delete_block(doc_id: str, block_id: str):
+async def delete_block(
+    doc_id: str,
+    block_id: str,
+    _doc: Document = Depends(verify_document_ownership),
+):
     blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
     if not blocks_file.exists():
         raise HTTPException(status_code=404, detail="blocks.json not found")
@@ -604,7 +659,11 @@ async def delete_block(doc_id: str, block_id: str):
 
 
 @router.post("/{doc_id}/blocks", summary="Добавить блок вручную")
-async def add_block(doc_id: str, payload: dict = Body(...)):
+async def add_block(
+    doc_id: str,
+    payload: dict = Body(...),
+    _doc: Document = Depends(verify_document_ownership),
+):
     blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
     if not blocks_file.exists():
         raise HTTPException(status_code=404, detail="blocks.json not found")
