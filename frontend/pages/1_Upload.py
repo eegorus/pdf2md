@@ -10,7 +10,11 @@ st.set_page_config(page_title="Upload — PRMS", layout="wide")
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def api(method, path, **kw):
     try:
-        r = httpx.request(method, f"{BACKEND_URL}{path}", timeout=60, **kw)
+        headers = kw.pop("headers", {})
+        token = st.session_state.get("access_token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        r = httpx.request(method, f"{BACKEND_URL}{path}", timeout=60, headers=headers, **kw)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -247,8 +251,9 @@ elif st.session_state.upload_stage == "quick_setup":
                     st.session_state.quick_api_key = ""
                     st.rerun()
 
-    # Загружаем статус API-ключей из Settings
-    settings_keys = (api("GET", "/settings/keys") or {}).get("providers", {})
+    # Загружаем статус API-ключей пользователя
+    keys_list = api("GET", "/users/me/api-keys") or []
+    settings_keys = {k["provider"]: k for k in keys_list}
     pid_map = {
         "gpt4o":      "openai",
         "claude":     "anthropic",

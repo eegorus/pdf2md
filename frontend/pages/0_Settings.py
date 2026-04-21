@@ -9,49 +9,78 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
 st.set_page_config(page_title="Settings — PRMS", layout="centered")
 
+PROVIDER_META = {
+    "openrouter": {
+        "label":       "OpenRouter",
+        "icon":        "🌐",
+        "placeholder": "sk-or-v1-...",
+        "url":         "https://openrouter.ai/keys",
+    },
+    "llamaparse": {
+        "label":       "LlamaParse",
+        "icon":        "🦙",
+        "placeholder": "llx-...",
+        "url":         "https://cloud.llamaindex.ai/api-key",
+    },
+    "openai": {
+        "label":       "OpenAI (GPT-4o)",
+        "icon":        "🤖",
+        "placeholder": "sk-...",
+        "url":         "https://platform.openai.com/api-keys",
+    },
+    "anthropic": {
+        "label":       "Anthropic (Claude)",
+        "icon":        "🔵",
+        "placeholder": "sk-ant-...",
+        "url":         "https://console.anthropic.com/settings/keys",
+    },
+}
+
+_PARSER_PROVIDER = {
+    "gpt4o":      "openai",
+    "claude":     "anthropic",
+    "llamaparse": "llamaparse",
+    "openrouter": "openrouter",
+}
+
+
 def api(method, path, **kw):
     try:
-        r = httpx.request(method, f"{BACKEND_URL}{path}", timeout=10, **kw)
+        headers = kw.pop("headers", {})
+        token = st.session_state.get("access_token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        r = httpx.request(method, f"{BACKEND_URL}{path}", timeout=10, headers=headers, **kw)
         r.raise_for_status()
         return r.json()
     except Exception as e:
         st.error(f"API {path}: {e}")
         return None
 
+
 # ── Заголовок ──────────────────────────────────────────────────────────────
 st.title("⚙️ Настройки")
-st.caption("API-ключи хранятся на сервере в `/app/data/settings.json`. Не передаются третьим лицам.")
+st.caption("API-ключи хранятся в зашифрованном виде в базе данных.")
 
 # ── Загружаем текущие ключи ────────────────────────────────────────────────
-providers_data = (api("GET", "/settings/keys") or {}).get("providers", {})
-
-if not providers_data:
-    st.error("Не удалось загрузить настройки с backend")
+if not st.session_state.get("access_token"):
+    st.warning("Войдите в систему для управления API-ключами.")
     st.stop()
+
+keys_list = api("GET", "/users/me/api-keys") or []
+keys_status = {k["provider"]: k["is_set"] for k in keys_list}
 
 # ── Форма ──────────────────────────────────────────────────────────────────
 st.markdown("## 🔑 API-ключи")
 
-PROVIDER_ICONS = {
-    "openrouter": "🌐",
-    "llamaparse": "🦙",
-    "openai":     "🤖",
-    "anthropic":  "🔵",
-}
-
 payload = {}
 with st.form("keys_form"):
-    for pid, meta in providers_data.items():
-        icon    = PROVIDER_ICONS.get(pid, "🔑")
-        is_set  = meta.get("is_set", False)
-        masked  = meta.get("masked", "")
-        label   = meta.get("label", pid)
-        url     = meta.get("url", "")
-        ph      = meta.get("placeholder", "")
+    for pid, meta in PROVIDER_META.items():
+        is_set = keys_status.get(pid, False)
 
         col_label, col_status = st.columns([3, 1])
         with col_label:
-            st.markdown(f"**{icon} {label}**  [получить ключ ↗]({url})")
+            st.markdown(f"**{meta['icon']} {meta['label']}**  [получить ключ ↗]({meta['url']})")
         with col_status:
             if is_set:
                 st.success("✅ задан", icon=None)
@@ -59,13 +88,12 @@ with st.form("keys_form"):
                 st.warning("не задан", icon=None)
 
         val = st.text_input(
-            f"Ключ {label}",
+            f"Ключ {meta['label']}",
             value="",
-            placeholder=f"{masked}" if is_set else ph,
+            placeholder=meta["placeholder"],
             type="password",
             key=f"key_{pid}",
             label_visibility="collapsed",
-            help=f"Текущий: {masked}" if is_set else "Не задан",
         )
         payload[pid] = val
         st.markdown("")
@@ -83,23 +111,28 @@ with st.form("keys_form"):
 
 # ── Обработка ──────────────────────────────────────────────────────────────
 if submitted:
-    # Отправляем только непустые или намеренно очищаемые
     to_send = {pid: v for pid, v in payload.items() if v.strip()}
     if not to_send:
         st.info("Нет новых ключей для сохранения — поля пустые.")
     else:
-        res = api("POST", "/settings/keys", json=to_send)
-        if res:
-            st.success(f"✅ Сохранено: {', '.join(res.get('saved', []))}")
+        saved = []
+        for pid, val in to_send.items():
+            res = api("PUT", f"/users/me/api-keys/{pid}", json={"key": val})
+            if res:
+                saved.append(pid)
+        if saved:
+            st.success(f"✅ Сохранено: {', '.join(saved)}")
             st.rerun()
 
 if clear:
-    # Передаём пустые строки для всех провайдеров — удалит все ключи
-    res = api("POST", "/settings/keys",
-              json={pid: "" for pid in providers_data})
-    if res:
-        st.success("🗑 Все ключи удалены")
-        st.rerun()
+    deleted = []
+    for pid in PROVIDER_META:
+        if keys_status.get(pid):
+            res = api("DELETE", f"/users/me/api-keys/{pid}")
+            if res:
+                deleted.append(pid)
+    st.success(f"🗑 Удалены: {', '.join(deleted)}" if deleted else "Нечего удалять")
+    st.rerun()
 
 # ── Статус моделей ─────────────────────────────────────────────────────────
 st.markdown("---")
@@ -126,22 +159,16 @@ st.markdown("## ⚡ Доступные парсеры")
 parsers = (api("GET", "/quick/parsers") or [])
 if parsers:
     for p in parsers:
-        avail = p.get("available", False)
+        avail     = p.get("available", False)
         needs_key = p.get("needs_api_key", False)
-        icon  = "✅" if avail else "❌"
-        key_icon = "🔑" if needs_key else "  "
+        icon      = "✅" if avail else "❌"
+        key_icon  = "🔑" if needs_key else "  "
 
-        pid_map = {
-            "gpt4o":      "openai",
-            "claude":     "anthropic",
-            "llamaparse": "llamaparse",
-            "openrouter": "openrouter",
-        }
         key_set = True
         if needs_key:
-            mapped = pid_map.get(p["name"])
+            mapped = _PARSER_PROVIDER.get(p["name"])
             if mapped:
-                key_set = providers_data.get(mapped, {}).get("is_set", False)
+                key_set = keys_status.get(mapped, False)
 
         note = ""
         if needs_key and not key_set:

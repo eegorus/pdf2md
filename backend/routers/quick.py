@@ -11,9 +11,11 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth.dependencies import verify_document_ownership
-from database.models import Document
+from auth.dependencies import get_current_user, verify_document_ownership
+from database.engine import get_db
+from database.models import Document, User
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 
@@ -103,6 +105,8 @@ async def run_quick(
     doc_id: str,
     payload: dict = Body(...),
     _doc: Document = Depends(verify_document_ownership),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
 ):
     meta_file = DATA_DIR / "uploads" / doc_id / "meta.json"
     if not meta_file.exists():
@@ -126,13 +130,20 @@ async def run_quick(
             detail=f"Парсер '{parser_name}' не установлен"
         )
     if parser.needs_api_key:
-        resolved = _resolve_api_key(parser_name, api_key)
-        if not resolved:
+        provider = _PARSER_PROVIDER.get(parser_name)
+        if provider:
+            from database.crud.api_keys import get_user_api_key
+            from auth.encryption import decrypt_api_key
+            user_key_record = await get_user_api_key(session, current_user.id, provider)
+            if user_key_record:
+                api_key = decrypt_api_key(user_key_record.encrypted_key)
+        if not api_key:
+            api_key = _resolve_api_key(parser_name, payload.get("api_key", ""))
+        if not api_key:
             raise HTTPException(
                 status_code=422,
                 detail=f"Парсер '{parser_name}' требует API key — задайте в Settings или введите вручную"
             )
-        api_key = resolved
 
     _jobs[doc_id] = {
         "status":     "running",

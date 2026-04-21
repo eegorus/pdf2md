@@ -327,8 +327,10 @@ async def health_ollama():
 # ═══════════════════════════════════════════════════════════════════════
 from routers import documents, processing, training, quick, settings  # noqa: E402
 from routers.auth import router as auth_router
+from routers.users import router as users_router
 
 app.include_router(auth_router)
+app.include_router(users_router)
 app.include_router(
     documents.router,
     prefix="/documents",
