@@ -17,6 +17,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+from components.auth_guard import require_auth, render_sidebar_user
+current_user = require_auth()
+render_sidebar_user()
+
 BLOCK_COLORS = {
     "text":    (59,  130, 246),
     "table":   (234, 88,  12),

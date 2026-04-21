@@ -7,6 +7,10 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
 st.set_page_config(page_title="Upload — PRMS", layout="wide")
 
+from components.auth_guard import require_auth, render_sidebar_user
+current_user = require_auth()
+render_sidebar_user()
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def api(method, path, **kw):
     try:

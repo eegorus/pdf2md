@@ -13,6 +13,10 @@ st.set_page_config(
     layout="wide",
 )
 
+from components.auth_guard import require_auth, render_sidebar_user
+current_user = require_auth()
+render_sidebar_user()
+
 
 # ─── Data fetchers ────────────────────────────────────────────────────────────
 

@@ -17,6 +17,9 @@ if "current_doc_id" not in st.session_state:
 if "current_doc_name" not in st.session_state:
     st.session_state.current_doc_name = None
 
+if not st.session_state.get("access_token"):
+    st.switch_page("pages/0Auth.py")
+
 # ─── ГЛАВНАЯ СТРАНИЦА ─────────────────────────────────────────────────────────
 st.title("📄 PRMS Table Extractor")
 st.markdown("""
