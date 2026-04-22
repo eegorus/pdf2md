@@ -6,20 +6,14 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
 
 def require_auth() -> dict:
-    """
-    Вызывать в начале каждой защищённой страницы.
-    Если пользователь не авторизован — показывает ссылку на вход и st.stop().
-    Возвращает словарь с данными пользователя.
-    """
     if not st.session_state.get("access_token"):
-        st.warning("⚠️ Необходима авторизация. Пожалуйста, войдите в систему.")
-        st.page_link("pages/0Auth.py", label="👉 Перейти на страницу входа", icon="🔑")
+        st.warning("⚠️ Authentication required. Please sign in.")
+        st.page_link("pages/0Auth.py", label="👉 Go to login page", icon="🔑")
         st.stop()
     return st.session_state.get("current_user", {})
 
 
 def api_get(path: str, params: dict = None) -> dict | None:
-    """GET-запрос к backend с автоматической подстановкой токена."""
     token = st.session_state.get("access_token")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
@@ -29,12 +23,11 @@ def api_get(path: str, params: dict = None) -> dict | None:
             return None
         return resp.json()
     except Exception as e:
-        st.error(f"Ошибка соединения с backend: {e}")
+        st.error(f"Backend connection error: {e}")
         return None
 
 
 def api_post(path: str, json_data: dict = None, files=None, timeout: int = 60) -> dict | None:
-    """POST-запрос к backend с автоматической подстановкой токена."""
     token = st.session_state.get("access_token")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
@@ -47,12 +40,11 @@ def api_post(path: str, json_data: dict = None, files=None, timeout: int = 60) -
             return None
         return resp.json()
     except Exception as e:
-        st.error(f"Ошибка соединения с backend: {e}")
+        st.error(f"Backend connection error: {e}")
         return None
 
 
 def api_delete(path: str) -> dict | None:
-    """DELETE-запрос к backend с токеном."""
     token = st.session_state.get("access_token")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
@@ -62,12 +54,11 @@ def api_delete(path: str) -> dict | None:
             return None
         return resp.json()
     except Exception as e:
-        st.error(f"Ошибка соединения с backend: {e}")
+        st.error(f"Backend connection error: {e}")
         return None
 
 
 def logout():
-    """Очистить сессию и выйти."""
     refresh_token = st.session_state.get("refresh_token")
     if refresh_token:
         try:
@@ -80,21 +71,19 @@ def logout():
 
 
 def _handle_unauthorized():
-    """Токен истёк — очистить сессию."""
     for key in ["access_token", "refresh_token", "current_user"]:
         st.session_state.pop(key, None)
-    st.warning("Сессия истекла. Пожалуйста, войдите снова.")
-    st.page_link("pages/0Auth.py", label="👉 Войти", icon="🔑")
+    st.warning("Session expired. Please sign in again.")
+    st.page_link("pages/0Auth.py", label="👉 Sign in", icon="🔑")
     st.stop()
 
 
 def render_sidebar_user():
-    """Показать блок пользователя в сайдбаре (имя + logout)."""
     user = st.session_state.get("current_user", {})
     if user:
         with st.sidebar:
             st.markdown("---")
             st.markdown(f"👤 **{user.get('username', 'User')}**")
             st.caption(user.get('email', ''))
-            if st.button("🚪 Выйти", key="sidebar_logout", use_container_width=True):
+            if st.button("🚪 Sign out", key="sidebar_logout", use_container_width=True):
                 logout()

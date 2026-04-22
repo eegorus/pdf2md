@@ -1,6 +1,3 @@
-"""
-0_Settings.py — управление API-ключами и настройками
-"""
 import os
 import httpx
 import streamlit as st
@@ -58,20 +55,17 @@ def api(method, path, **kw):
         return None
 
 
-# ── Заголовок ──────────────────────────────────────────────────────────────
-st.title("⚙️ Настройки")
-st.caption("API-ключи хранятся в зашифрованном виде в базе данных.")
+st.title("⚙️ Settings")
+st.caption("API keys are stored encrypted in the database.")
 
-# ── Загружаем текущие ключи ────────────────────────────────────────────────
 if not st.session_state.get("access_token"):
-    st.warning("Войдите в систему для управления API-ключами.")
+    st.warning("Please sign in to manage API keys.")
     st.stop()
 
 keys_list = api("GET", "/users/me/api-keys") or []
 keys_status = {k["provider"]: k["is_set"] for k in keys_list}
 
-# ── Форма ──────────────────────────────────────────────────────────────────
-st.markdown("## 🔑 API-ключи")
+st.markdown("## 🔑 API Keys")
 
 payload = {}
 with st.form("keys_form"):
@@ -80,15 +74,15 @@ with st.form("keys_form"):
 
         col_label, col_status = st.columns([3, 1])
         with col_label:
-            st.markdown(f"**{meta['icon']} {meta['label']}**  [получить ключ ↗]({meta['url']})")
+            st.markdown(f"**{meta['icon']} {meta['label']}**  [get key ↗]({meta['url']})")
         with col_status:
             if is_set:
-                st.success("✅ задан", icon=None)
+                st.success("✅ set", icon=None)
             else:
-                st.warning("не задан", icon=None)
+                st.warning("not set", icon=None)
 
         val = st.text_input(
-            f"Ключ {meta['label']}",
+            f"Key {meta['label']}",
             value="",
             placeholder=meta["placeholder"],
             type="password",
@@ -102,18 +96,17 @@ with st.form("keys_form"):
     col_save, col_clear = st.columns([2, 1])
     with col_save:
         submitted = st.form_submit_button(
-            "💾 Сохранить", type="primary", use_container_width=True
+            "💾 Save", type="primary", use_container_width=True
         )
     with col_clear:
         clear = st.form_submit_button(
-            "🗑 Удалить все ключи", use_container_width=True
+            "🗑 Delete all keys", use_container_width=True
         )
 
-# ── Обработка ──────────────────────────────────────────────────────────────
 if submitted:
     to_send = {pid: v for pid, v in payload.items() if v.strip()}
     if not to_send:
-        st.info("Нет новых ключей для сохранения — поля пустые.")
+        st.info("No new keys to save — fields are empty.")
     else:
         saved = []
         for pid, val in to_send.items():
@@ -121,7 +114,7 @@ if submitted:
             if res:
                 saved.append(pid)
         if saved:
-            st.success(f"✅ Сохранено: {', '.join(saved)}")
+            st.success(f"✅ Saved: {', '.join(saved)}")
             st.rerun()
 
 if clear:
@@ -131,12 +124,11 @@ if clear:
             res = api("DELETE", f"/users/me/api-keys/{pid}")
             if res:
                 deleted.append(pid)
-    st.success(f"🗑 Удалены: {', '.join(deleted)}" if deleted else "Нечего удалять")
+    st.success(f"🗑 Deleted: {', '.join(deleted)}" if deleted else "Nothing to delete")
     st.rerun()
 
-# ── Статус моделей ─────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("## 🖥 Статус сервисов")
+st.markdown("## 🖥 Service Status")
 
 health = api("GET", "/health") or {}
 models_loaded = health.get("models_loaded", {})
@@ -152,9 +144,8 @@ if models_loaded:
             icon = "✅" if loaded else "❌"
             st.caption(f"{icon} {model}")
 
-# ── Парсеры ────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.markdown("## ⚡ Доступные парсеры")
+st.markdown("## ⚡ Available Parsers")
 
 parsers = (api("GET", "/quick/parsers") or [])
 if parsers:
@@ -172,6 +163,6 @@ if parsers:
 
         note = ""
         if needs_key and not key_set:
-            note = " — ⚠️ ключ не задан"
+            note = " — ⚠️ key not set"
 
         st.caption(f"{icon} {key_icon} **{p['label']}**{note}")

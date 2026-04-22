@@ -20,22 +20,22 @@ if "current_doc_name" not in st.session_state:
 if not st.session_state.get("access_token"):
     st.switch_page("pages/0Auth.py")
 
-# ─── ГЛАВНАЯ СТРАНИЦА ─────────────────────────────────────────────────────────
+# ─── HOME PAGE ────────────────────────────────────────────────────────────────
 st.title("📄 PRMS Table Extractor")
 st.markdown("""
-Система извлечения таблиц, текста, формул и фигур из PDF-отчётов ПМРС.
+Table, text, formula and figure extraction from PDF reports.
 
 ### Workflow
-1. **Upload** — загрузи PDF и запусти pipeline
-2. **Viewer** — просматривай документ с наложенными блоками
-3. **Review** — проверяй и помечай блоки вручную
-4. **Compare** — размечай обучающие пары
-5. **Training** — запускай fine-tuning модели
+1. **Upload** — upload a PDF and run the pipeline
+2. **Viewer** — view document with overlaid blocks
+3. **Review** — review and label blocks manually
+4. **Compare** — annotate training pairs
+5. **Training** — run model fine-tuning
 """)
 
 st.markdown("---")
 
-# ─── HEALTH СТАТУС ────────────────────────────────────────────────────────────
+# ─── HEALTH STATUS ────────────────────────────────────────────────────────────
 @st.cache_data(ttl=10)
 def get_health():
     try:
@@ -56,10 +56,10 @@ with col1:
         st.markdown(f"{color} **{status}**")
         st.caption(f"v{health.get('version', '—')}")
     else:
-        st.markdown("🔴 **Недоступен**")
+        st.markdown("🔴 **Unavailable**")
 
 with col2:
-    st.markdown("### 🤖 Модели")
+    st.markdown("### 🤖 Models")
     if health:
         models = health.get("models_loaded", {})
         for model, loaded in models.items():
@@ -79,35 +79,35 @@ with col3:
                 text=f"VRAM: {gpu_used:.1f} / {gpu_total:.1f} GB"
             )
             free = gpu_total - gpu_used
-            st.caption(f"Свободно: {free:.1f} GB")
+            st.caption(f"Free: {free:.1f} GB")
         else:
-            st.caption("GPU info недоступна")
+            st.caption("GPU info unavailable")
     else:
         st.caption("—")
 
-# ─── ТЕКУЩИЙ ДОКУМЕНТ ─────────────────────────────────────────────────────────
+# ─── CURRENT DOCUMENT ─────────────────────────────────────────────────────────
 if st.session_state.current_doc_id:
     st.markdown("---")
-    st.markdown("### 📂 Текущий документ")
+    st.markdown("### 📂 Current document")
     doc_id = st.session_state.current_doc_id
     try:
         r = httpx.get(f"{BACKEND_URL}/processing/{doc_id}/status", timeout=3)
         s = r.json()
         st.markdown(f"**{st.session_state.current_doc_name}** · `{doc_id}`")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Страниц", s.get("page_count", "—"))
-        c2.metric("Блоков", s.get("total_blocks", "—"))
-        c3.metric("Обработано", s.get("processed_blocks", "—"))
-        c4.metric("Статус", s.get("status", "—"))
+        c1.metric("Pages", s.get("page_count", "—"))
+        c2.metric("Blocks", s.get("total_blocks", "—"))
+        c3.metric("Processed", s.get("processed_blocks", "—"))
+        c4.metric("Status", s.get("status", "—"))
     except Exception:
         st.caption(f"`{doc_id}`")
 
-    if st.button("✖ Сбросить текущий документ"):
+    if st.button("✖ Clear current document"):
         st.session_state.current_doc_id = None
         st.session_state.current_doc_name = None
         st.rerun()
 
-# ─── SIDEBAR (минимальный) ────────────────────────────────────────────────────
+# ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 📄 PRMS Extractor")
     st.markdown("---")
@@ -121,6 +121,6 @@ with st.sidebar:
             st.progress(gpu_used / gpu_total,
                        text=f"VRAM: {gpu_used:.1f}/{gpu_total:.1f} GB")
     else:
-        st.markdown("🔴 Backend недоступен")
+        st.markdown("🔴 Backend unavailable")
     st.markdown("---")
     st.caption("v1.1.0 · PRMS Table Extractor")

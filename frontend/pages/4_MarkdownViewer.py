@@ -74,22 +74,22 @@ docs = fetch_documents()
 ready_docs = [d for d in docs if d.get("status") in ("ocr_done", "ocrdone", "done")]
 
 if not ready_docs:
-    st.info("Нет обработанных документов. Загрузи PDF в Upload и запусти обработку.")
+    st.info("No processed documents. Upload a PDF and run processing.")
     st.stop()
 
 default_doc_id = st.session_state.get("viewer_doc_id") or st.session_state.get("md_viewer_doc_id")
 
 doc_options = {
     d["doc_id"]: (
-        f"⚡ {d.get('filename', d['doc_id'][:12])} ({d.get('page_count', '?')} стр.)"
+        f"⚡ {d.get('filename', d['doc_id'][:12])} ({d.get('page_count', '?')} pp.)"
         if d.get("mode") == "quick" else
-        f"🔬 {d.get('filename', d['doc_id'][:12])} ({d.get('page_count', '?')} стр.)"
+        f"🔬 {d.get('filename', d['doc_id'][:12])} ({d.get('page_count', '?')} pp.)"
     )
     for d in ready_docs
 }
 
 selected_doc_id = st.selectbox(
-    "Документ",
+    "Document",
     options=list(doc_options.keys()),
     format_func=lambda x: doc_options[x],
     index=list(doc_options.keys()).index(default_doc_id)
@@ -104,17 +104,17 @@ st.divider()
 md_content = fetch_markdown(selected_doc_id)
 
 if md_content is None:
-    with st.spinner("Генерируем export.md..."):
+    with st.spinner("Generating export.md..."):
         ok = generate_export(selected_doc_id)
         if ok:
             fetch_markdown.clear()
             md_content = fetch_markdown(selected_doc_id)
         else:
-            st.error("Не удалось сгенерировать markdown. Проверь статус OCR.")
+            st.error("Failed to generate markdown. Check OCR status.")
             st.stop()
 
 if md_content is None:
-    st.error("export.md не найден даже после генерации.")
+    st.error("export.md not found even after generation.")
     st.stop()
 
 # ─── Editor state ─────────────────────────────────────────────────────────────
@@ -132,8 +132,8 @@ col_mode, col_save, col_reset, col_dl, col_zip = st.columns([3, 1.2, 1.2, 1.2, 1
 
 with col_mode:
     view_mode = st.radio(
-        "Режим",
-        ["👁 Просмотр", "✏️ Редактор", "↕️ Split"],
+        "Mode",
+        ["👁 Preview", "✏️ Editor", "↕️ Split"],
         horizontal=True,
         key="md_view_mode",
         label_visibility="collapsed",
@@ -143,7 +143,7 @@ is_dirty = st.session_state.get(_dirty_key, False)
 
 with col_save:
     if st.button(
-        "💾 Сохранить",
+        "💾 Save",
         disabled=not is_dirty,
         use_container_width=True,
         type="primary" if is_dirty else "secondary",
@@ -153,14 +153,14 @@ with col_save:
         if ok:
             st.session_state[_dirty_key] = False
             fetch_markdown.clear()
-            st.success("Сохранено!")
+            st.success("Saved!")
             st.rerun()
         else:
-            st.error("Ошибка сохранения")
+            st.error("Save error")
 
 with col_reset:
     if st.button(
-        "↩️ Сбросить",
+        "↩️ Reset",
         disabled=not is_dirty,
         use_container_width=True,
         key="btn_md_reset",
@@ -171,7 +171,7 @@ with col_reset:
 
 with col_dl:
     st.download_button(
-        "⬇️ Скачать",
+        "⬇️ Download",
         data=st.session_state.get(_edit_key, md_content).encode("utf-8"),
         file_name=f"{selected_doc_id[:8]}_export.md",
         mime="text/markdown",
@@ -210,7 +210,6 @@ _IMG_RE = re.compile(r'!\[([^\]]*)\]\(\./blocks/([^)]+)\)')
 
 @st.cache_data(ttl=300)
 def _fetch_image_b64(doc_id: str, filename: str) -> str | None:
-    """Загружает PNG блока через внутренний Docker URL, возвращает base64."""
     import base64
     try:
         r = httpx.get(
@@ -225,7 +224,6 @@ def _fetch_image_b64(doc_id: str, filename: str) -> str | None:
 
 
 def resolve_media_urls(content: str, doc_id: str) -> str:
-    """Заменяет ./blocks/filename.png на inline base64 <img> для рендера в браузере."""
     def _replace(m: re.Match) -> str:
         alt = m.group(1).replace('"', "'")
         filename = m.group(2)
@@ -240,23 +238,22 @@ def resolve_media_urls(content: str, doc_id: str) -> str:
 # ─── LaTeX editor tools ───────────────────────────────────────────────────────
 
 def render_latex_toolbar(edit_key: str) -> None:
-    """Сниппеты LaTeX для копирования в буфер и вставки в нужное место."""
     SNIPPETS = [
-        ("x²  — Степень 2",          "$x^{2}$"),
-        ("xₙ  — Нижний индекс",      "$x_{n}$"),
-        ("10³ft³ — Объём газа",       "$10^3\\,\\text{ft}^3$"),
-        ("10³bbl — Объём нефти",      "$10^3\\,\\text{bbl}$"),
-        ("10⁶bbl",                    "$10^6\\,\\text{bbl}$"),
-        ("$/bbl  — Цена нефти",       "\\$/\\text{bbl}"),
-        ("$/Mscf — Цена газа",        "\\$/\\text{Mscf}"),
-        ("CO₂",                       "CO$_{2}$"),
-        ("H₂S",                       "H$_{2}$S"),
-        ("± / ×",                     "$\\pm$ / $\\times$"),
-        ("a/b  — Дробь",              "$\\frac{a}{b}$"),
-        ("∑  — Сумма",                "$$\\sum_{i=1}^{n} x_i$$"),
+        ("x²  — Superscript 2",    "$x^{2}$"),
+        ("xₙ  — Subscript",        "$x_{n}$"),
+        ("10³ft³ — Gas volume",    "$10^3\\,\\text{ft}^3$"),
+        ("10³bbl — Oil volume",    "$10^3\\,\\text{bbl}$"),
+        ("10⁶bbl",                  "$10^6\\,\\text{bbl}$"),
+        ("$/bbl  — Oil price",     "\\$/\\text{bbl}"),
+        ("$/Mscf — Gas price",     "\\$/\\text{Mscf}"),
+        ("CO₂",                     "CO$_{2}$"),
+        ("H₂S",                     "H$_{2}$S"),
+        ("± / ×",                   "$\\pm$ / $\\times$"),
+        ("a/b  — Fraction",        "$\\frac{a}{b}$"),
+        ("∑  — Sum",               "$$\\sum_{i=1}^{n} x_i$$"),
     ]
 
-    with st.expander("⚡ LaTeX сниппеты — кликни поле, Ctrl+A, Ctrl+C, потом вставь в редактор", expanded=False):
+    with st.expander("⚡ LaTeX snippets — click field, Ctrl+A, Ctrl+C, then paste into editor", expanded=False):
         cols = st.columns(3)
         for i, (label, latex) in enumerate(SNIPPETS):
             with cols[i % 3]:
@@ -269,18 +266,17 @@ def render_latex_toolbar(edit_key: str) -> None:
 
 
 def render_find_replace(edit_key: str) -> None:
-    """Панель поиска и замены с поддержкой regex."""
-    with st.expander("🔍 Найти и заменить", expanded=False):
+    with st.expander("🔍 Find & Replace", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
             find_val = st.text_input(
-                "Найти",
+                "Find",
                 key=f"fr_find_{edit_key}",
                 placeholder=r"10\^?3ft\^?3",
             )
         with col2:
             repl_val = st.text_input(
-                "Заменить на",
+                "Replace with",
                 key=f"fr_repl_{edit_key}",
                 placeholder=r"$10^3\,\text{ft}^3$",
             )
@@ -288,12 +284,12 @@ def render_find_replace(edit_key: str) -> None:
         col_chk, col_cnt, col_go = st.columns([2, 1, 1])
         with col_chk:
             use_regex = st.checkbox(
-                "Использовать regex",
+                "Use regex",
                 value=True,
                 key=f"fr_re_{edit_key}",
             )
         with col_cnt:
-            if st.button("Посчитать", key=f"fr_cnt_{edit_key}",
+            if st.button("Count", key=f"fr_cnt_{edit_key}",
                          use_container_width=True):
                 content = st.session_state.get(edit_key, "")
                 if find_val:
@@ -302,11 +298,11 @@ def render_find_replace(edit_key: str) -> None:
                             matches = re.findall(find_val, content)
                         else:
                             matches = content.split(find_val)[:-1]
-                        st.info(f"Найдено: {len(matches)}")
+                        st.info(f"Found: {len(matches)}")
                     except re.error as e:
-                        st.error(f"Regex ошибка: {e}")
+                        st.error(f"Regex error: {e}")
         with col_go:
-            if st.button("Заменить всё", key=f"fr_do_{edit_key}",
+            if st.button("Replace all", key=f"fr_do_{edit_key}",
                          use_container_width=True, type="primary"):
                 content = st.session_state.get(edit_key, "")
                 if find_val:
@@ -317,10 +313,10 @@ def render_find_replace(edit_key: str) -> None:
                             count = content.count(find_val)
                             new_content = content.replace(find_val, repl_val)
                         st.session_state[edit_key] = new_content
-                        st.success(f"✅ Заменено: {count}")
+                        st.success(f"✅ Replaced: {count}")
                         st.rerun()
                     except re.error as e:
-                        st.error(f"Regex ошибка: {e}")
+                        st.error(f"Regex error: {e}")
 
 
 # ─── Render helpers ───────────────────────────────────────────────────────────
@@ -350,11 +346,11 @@ def render_editor(content: str, key: str) -> str:
 
 # ─── Content area ─────────────────────────────────────────────────────────────
 
-if view_mode == "👁 Просмотр":
+if view_mode == "👁 Preview":
     resolved = resolve_media_urls(st.session_state.get(_edit_key, md_content), selected_doc_id)
     render_preview(resolved)
 
-elif view_mode == "✏️ Редактор":
+elif view_mode == "✏️ Editor":
     render_latex_toolbar(_edit_key)
     render_find_replace(_edit_key)
     new_content = render_editor(st.session_state[_edit_key], _edit_key)
@@ -367,12 +363,12 @@ else:  # Split
     render_find_replace(_edit_key)
     col_left, col_right = st.columns(2)
     with col_left:
-        st.caption("👁 Превью")
+        st.caption("👁 Preview")
         with st.container(height=800, border=False):
             resolved = resolve_media_urls(st.session_state.get(_edit_key, md_content), selected_doc_id)
             render_preview(resolved)
     with col_right:
-        st.caption("✏️ Редактор")
+        st.caption("✏️ Editor")
         new_content = render_editor(st.session_state[_edit_key], _edit_key)
         if new_content != st.session_state[_edit_key]:
             st.session_state[_edit_key] = new_content

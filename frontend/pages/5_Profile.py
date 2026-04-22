@@ -4,7 +4,7 @@ import os
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
-st.set_page_config(page_title="Профиль — PRMS", page_icon="👤", layout="wide")
+st.set_page_config(page_title="Profile — PRMS", page_icon="👤", layout="wide")
 
 from components.auth_guard import require_auth, render_sidebar_user
 
@@ -30,7 +30,6 @@ def _api_get_raw(path: str):
     return httpx.get(f"{BACKEND_URL}{path}", headers=headers, timeout=15)
 
 
-# Refresh current_user from backend on page load
 try:
     resp = _api_get_raw("/users/me")
     if resp.status_code == 200:
@@ -49,7 +48,7 @@ with col_info:
         st.markdown("👑 **Admin**")
 with col_logout:
     st.write("")
-    if st.button("🚪 Выйти", use_container_width=True):
+    if st.button("🚪 Sign out", use_container_width=True):
         try:
             _api_post_raw("/auth/logout", {"refresh_token": st.session_state.get("refresh_token", "")})
         except Exception:
@@ -59,44 +58,44 @@ with col_logout:
 
 st.divider()
 
-tab_account, tab_storage = st.tabs(["👤 Аккаунт", "💾 Хранилище"])
+tab_account, tab_storage = st.tabs(["👤 Account", "💾 Storage"])
 
 # === TAB 1: ACCOUNT ===
 with tab_account:
-    st.subheader("Данные профиля")
+    st.subheader("Profile")
     with st.form("profile_form"):
-        new_username = st.text_input("Имя пользователя", value=current_user.get("username", ""))
+        new_username = st.text_input("Username", value=current_user.get("username", ""))
         new_email = st.text_input("Email", value=current_user.get("email", ""))
-        save_profile = st.form_submit_button("Сохранить", type="primary")
+        save_profile = st.form_submit_button("Save", type="primary")
 
     if save_profile:
         try:
             resp = _api_patch("/users/me", {"username": new_username, "email": new_email})
             if resp.status_code == 200:
                 st.session_state["current_user"] = resp.json()
-                st.success("Профиль обновлён")
+                st.success("Profile updated")
                 st.rerun()
             elif resp.status_code == 409:
-                st.error("Email или username уже занят")
+                st.error("Email or username already taken")
             else:
-                st.error(f"Ошибка: {resp.status_code}")
+                st.error(f"Error: {resp.status_code}")
         except Exception as e:
-            st.error(f"Ошибка соединения: {e}")
+            st.error(f"Connection error: {e}")
 
     st.divider()
-    st.subheader("Смена пароля")
+    st.subheader("Change Password")
 
     with st.form("password_form"):
-        current_password = st.text_input("Текущий пароль", type="password")
-        new_password = st.text_input("Новый пароль", type="password")
-        confirm_password = st.text_input("Подтвердить новый пароль", type="password")
-        change_pw = st.form_submit_button("Сменить пароль", type="primary")
+        current_password = st.text_input("Current password", type="password")
+        new_password = st.text_input("New password", type="password")
+        confirm_password = st.text_input("Confirm new password", type="password")
+        change_pw = st.form_submit_button("Change password", type="primary")
 
     if change_pw:
         if new_password != confirm_password:
-            st.error("Новый пароль и подтверждение не совпадают")
+            st.error("New password and confirmation do not match")
         elif len(new_password) < 8:
-            st.error("Новый пароль должен содержать минимум 8 символов")
+            st.error("New password must be at least 8 characters")
         else:
             try:
                 resp = _api_post_raw(
@@ -104,13 +103,13 @@ with tab_account:
                     {"current_password": current_password, "new_password": new_password},
                 )
                 if resp.status_code == 200:
-                    st.success("Пароль изменён")
+                    st.success("Password changed")
                 elif resp.status_code == 400:
-                    st.error("Неверный текущий пароль")
+                    st.error("Incorrect current password")
                 else:
-                    st.error(f"Ошибка: {resp.status_code}")
+                    st.error(f"Error: {resp.status_code}")
             except Exception as e:
-                st.error(f"Ошибка соединения: {e}")
+                st.error(f"Connection error: {e}")
 
 # === TAB 2: STORAGE ===
 with tab_storage:
@@ -119,17 +118,17 @@ with tab_storage:
         if resp.status_code == 200:
             stats = resp.json()
             c1, c2, c3 = st.columns(3)
-            c1.metric("📄 Документов", stats["document_count"])
-            c2.metric("💾 Использовано", f"{stats['used_mb']} MB")
-            c3.metric("📦 Квота", f"{stats['quota_mb']} MB")
+            c1.metric("📄 Documents", stats["document_count"])
+            c2.metric("💾 Used", f"{stats['used_mb']} MB")
+            c3.metric("📦 Quota", f"{stats['quota_mb']} MB")
             st.progress(min(stats["usage_percent"] / 100, 1.0))
-            st.caption(f"{stats['used_mb']} MB из {stats['quota_mb']} MB ({stats['usage_percent']}%)")
+            st.caption(f"{stats['used_mb']} MB of {stats['quota_mb']} MB ({stats['usage_percent']}%)")
             if stats["usage_percent"] > 90:
-                st.warning("Хранилище почти заполнено")
+                st.warning("Storage is almost full")
         else:
-            st.error(f"Ошибка загрузки статистики: {resp.status_code}")
+            st.error(f"Error loading stats: {resp.status_code}")
     except Exception as e:
-        st.error(f"Ошибка соединения: {e}")
+        st.error(f"Connection error: {e}")
 
-    if st.button("📂 Перейти к документам"):
+    if st.button("📂 Go to documents"):
         st.switch_page("pages/1_Upload.py")

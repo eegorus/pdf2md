@@ -53,7 +53,6 @@ def fetch_blocks(doc_id: str):
 
 @st.cache_data(ttl=5)
 def fetch_block_preview(doc_id: str, block_id: str, _bust: int = 0) -> bytes | None:
-    """_bust меняется → Streamlit считает новым вызовом → не берёт из кэша."""
     try:
         resp = httpx.get(
             f"{BACKEND_URL}/documents/{doc_id}/block-image/{block_id}",
@@ -77,7 +76,6 @@ def fetch_available_models() -> dict:
 
 @st.cache_data(ttl=60)
 def fetch_page_image(doc_id: str, page_num: int, max_w: int = 740, max_h: int = 960):
-    """Возвращает (resized_img, orig_w, orig_h, scale) или (None, 0, 0, 1.0)."""
     try:
         r = httpx.get(
             f"{BACKEND_URL}/documents/{doc_id}/page-image/{page_num}", timeout=15
@@ -105,7 +103,7 @@ def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
 
         if has_ocr:
             if st.button(label, use_container_width=True, key=f"{key_prefix}_gen_{fmt}"):
-                with st.spinner(f"Генерируем {fmt}..."):
+                with st.spinner(f"Generating {fmt}..."):
                     try:
                         httpx.post(
                             f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}",
@@ -128,14 +126,14 @@ def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
                                 "mime":     mime,
                             }
                         else:
-                            st.error(f"Ошибка экспорта: {dl.status_code}")
+                            st.error(f"Export error: {dl.status_code}")
                     except Exception as e:
                         st.error(str(e))
 
             cached = st.session_state.get(cache_key)
             if cached:
                 st.download_button(
-                    f"⬇ Скачать .{ext}",
+                    f"⬇ Download .{ext}",
                     data=cached["content"],
                     file_name=cached["filename"],
                     mime=cached["mime"],
@@ -147,9 +145,9 @@ def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
                       key=f"{key_prefix}_dis_{fmt}")
 
     if not has_ocr:
-        st.caption("сначала запусти OCR")
+        st.caption("run OCR first")
 
-    if st.button("📄 Открыть в MD Viewer", use_container_width=True, key=f"{key_prefix}_go_md"):
+    if st.button("📄 Open in MD Viewer", use_container_width=True, key=f"{key_prefix}_go_md"):
         st.session_state["md_viewer_doc_id"] = doc_id
         st.switch_page("pages/4_MarkdownViewer.py")
 
@@ -200,35 +198,31 @@ _defaults = {
     "viewer_edit_mode": False,
     "viewer_confirm_delete": False,
     "viewer_model_dialog_open": False,
-    "viewer_model_choices": {},      # {block_type: model_id}
-    # Режимы
+    "viewer_model_choices": {},
     "viewer_draw_mode": False,
     "viewer_draw_type": "text",
-    "viewer_mode": None,              # None | "edit" — редактирование bbox
-    "viewer_canvas_version": 0,       # инкрементируем чтобы сбросить st_canvas
-    # Размеры оригинала
+    "viewer_mode": None,
+    "viewer_canvas_version": 0,
     "viewer_orig_w": 0,
     "viewer_orig_h": 0,
-    # Undo-стек (max 10)
-    "undo_stack": [],                 # list of {action, block_id, snapshot?}
-    # Последние обработанные координаты canvas click (guard против replay)
-    "canvas_last_coord": None,        # (canvas_version, x, y) | None
+    "undo_stack": [],
+    "canvas_last_coord": None,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ─── ЗАГОЛОВОК ────────────────────────────────────────────────────────────────
+# ─── HEADER ───────────────────────────────────────────────────────────────────
 st.title("🔍 Document Viewer")
 
 doc_id = st.session_state.get("viewer_doc_id") or st.session_state.get("viewer_doc_id")
 if not doc_id:
-    st.markdown("### 📁 Выберите документ")
+    st.markdown("### 📁 Select document")
 
     docs = fetch_documents()
 
     if not docs:
-        st.info("Нет загруженных документов. Перейди на страницу **Upload**.")
+        st.info("No documents found. Go to the **Upload** page.")
         st.stop()
 
     STATUS_ICON = {
@@ -249,11 +243,11 @@ if not doc_id:
         col_info, col_btn = st.columns([4, 1])
         with col_info:
             st.markdown(f"**{icon} {name}**")
-            st.caption(f"{pages} стр. · статус: `{status}`")
+            st.caption(f"{pages} pp. · status: `{status}`")
         with col_btn:
             can_open = status in ("layout_done", "ocr_done")
             if st.button(
-                "Открыть",
+                "Open",
                 key=f"open_{did}",
                 disabled=not can_open,
                 use_container_width=True,
@@ -270,7 +264,6 @@ doc_name = st.session_state.get("current_doc_name", doc_id)
 
 
 def _do_undo() -> bool:
-    """Отменяет последнее действие из undo_stack. Возвращает True при успехе."""
     _stk = st.session_state.undo_stack
     if not _stk:
         return False
@@ -331,40 +324,37 @@ except Exception:
     total_pages = 1
 
 
-# ─── МОДАЛЬНОЕ ОКНО ВЫБОРА МОДЕЛЕЙ ────────────────────────────────────────────
-@st.dialog("🎯 Выбор моделей для распознавания", width="large")
+# ─── MODEL SELECTION DIALOG ───────────────────────────────────────────────────
+@st.dialog("🎯 Select models for recognition", width="large")
 def model_selection_dialog(doc_id: str, all_blocks: list):
-    """Пользователь назначает модель для каждого типа блоков → запускает OCR."""
     import httpx as _httpx
 
-    # Загружаем доступные модели с backend
     try:
         r = _httpx.get(f"{BACKEND_URL}/settings/available-models", timeout=5)
         avail = r.json()
     except Exception as e:
-        st.error(f"Не удалось загрузить список моделей: {e}")
+        st.error(f"Failed to load model list: {e}")
         return
 
-    # Определяем какие типы блоков реально присутствуют в документе
     present_types = sorted(set(
         b.get("block_type") for b in all_blocks
         if b.get("block_type") in avail
     ))
 
     if not present_types:
-        st.warning("В документе нет размеченных блоков")
+        st.warning("No annotated blocks in this document")
         return
 
     BLOCK_LABELS = {
-        "text":          "📝 Текст",
-        "figure":        "🖼 Картинка",
-        "table_simple":  "📊 Таблица простая",
-        "table_complex": "📊 Таблица сложная",
-        "formula":       "➗ Формула",
-        "table":         "📊 Таблица",
+        "text":          "📝 Text",
+        "figure":        "🖼 Image",
+        "table_simple":  "📊 Simple table",
+        "table_complex": "📊 Complex table",
+        "formula":       "➗ Formula",
+        "table":         "📊 Table",
     }
 
-    st.markdown("Назначьте модель для каждого типа блоков в документе:")
+    st.markdown("Assign a model for each block type in the document:")
     st.markdown("---")
 
     choices = {}
@@ -377,7 +367,7 @@ def model_selection_dialog(doc_id: str, all_blocks: list):
         with col_type:
             cnt = sum(1 for b in all_blocks if b.get("block_type") == btype)
             st.markdown(f"**{BLOCK_LABELS.get(btype, btype)}**")
-            st.caption(f"{cnt} блоков")
+            st.caption(f"{cnt} blocks")
         with col_sel:
             opts       = [m["id"]    for m in models]
             opt_labels = []
@@ -388,7 +378,7 @@ def model_selection_dialog(doc_id: str, all_blocks: list):
 
             default_idx = opts.index(default) if default in opts else 0
             chosen = st.selectbox(
-                f"Модель для {btype}",
+                f"Model for {btype}",
                 options=opts,
                 index=default_idx,
                 format_func=lambda x, _opts=opts, _labels=opt_labels: _labels[_opts.index(x)],
@@ -397,7 +387,6 @@ def model_selection_dialog(doc_id: str, all_blocks: list):
             )
             choices[btype] = chosen
 
-            # Предупреждение если выбранная модель недоступна
             chosen_meta = next((m for m in models if m["id"] == chosen), None)
             if chosen_meta and not chosen_meta["available"]:
                 st.warning(f"⚠️ {chosen_meta['reason']}", icon=None)
@@ -407,7 +396,7 @@ def model_selection_dialog(doc_id: str, all_blocks: list):
     st.markdown("---")
     run_col, cancel_col = st.columns([2, 1])
     with run_col:
-        if st.button("▶ Запустить распознавание", type="primary",
+        if st.button("▶ Run recognition", type="primary",
                      use_container_width=True, key="modal_run"):
             st.session_state.viewer_model_choices = choices
             try:
@@ -424,11 +413,11 @@ def model_selection_dialog(doc_id: str, all_blocks: list):
                         st.session_state["ocr_doc_id"]  = doc_id
                         st.rerun()
                 else:
-                    st.error(f"Ошибка запуска: {resp.status_code} — {resp.text[:200]}")
+                    st.error(f"Launch error: {resp.status_code} — {resp.text[:200]}")
             except Exception as e:
                 st.error(str(e))
     with cancel_col:
-        if st.button("Отмена", use_container_width=True, key="modal_cancel"):
+        if st.button("Cancel", use_container_width=True, key="modal_cancel"):
             st.rerun()
 
 
@@ -446,12 +435,12 @@ if st.session_state.get("ocr_polling") and st.session_state.get("ocr_doc_id") ==
 
             if _status == "running":
                 _prog_pct = _processed / (_total or 1)
-                st.progress(_prog_pct, text=f"Обработано блоков: {_processed} / {_total}")
+                st.progress(_prog_pct, text=f"Blocks processed: {_processed} / {_total}")
                 if st.button(
-                    "⏹ Остановить OCR",
+                    "⏹ Stop OCR",
                     key="btn_cancel_ocr",
                     type="secondary",
-                    help="Прерывает обработку после текущего блока. Уже обработанные блоки сохраняются.",
+                    help="Stops processing after the current block. Already processed blocks are saved.",
                 ):
                     try:
                         _cancel_resp = httpx.post(
@@ -459,40 +448,40 @@ if st.session_state.get("ocr_polling") and st.session_state.get("ocr_doc_id") ==
                             timeout=5,
                         )
                         if _cancel_resp.status_code == 200:
-                            st.warning("⏸ Отмена отправлена, ожидаем завершения текущего блока...")
+                            st.warning("⏸ Cancellation sent, waiting for current block to finish...")
                         else:
-                            st.error(f"Ошибка отмены: {_cancel_resp.status_code}")
+                            st.error(f"Cancel error: {_cancel_resp.status_code}")
                     except Exception as _ce:
                         st.error(str(_ce))
                 time.sleep(3)
                 st.rerun()
             elif _status == "cancelled":
-                st.warning(f"⏹ OCR прерван. Обработано: {_processed}/{_total} блоков.")
+                st.warning(f"⏹ OCR cancelled. Processed: {_processed}/{_total} blocks.")
                 st.session_state.pop("ocr_polling", None)
                 fetch_blocks.clear()
                 st.rerun()
             elif _status == "done":
                 st.success(
-                    f"✅ OCR завершён! Обработано: {_processed}, "
-                    f"ошибок: {_ocr_st.get('errors', 0)}"
+                    f"✅ OCR complete! Processed: {_processed}, "
+                    f"errors: {_ocr_st.get('errors', 0)}"
                 )
                 st.session_state.pop("ocr_polling", None)
                 fetch_blocks.clear()
             elif _status == "error":
-                st.error(f"❌ Ошибка OCR: {_ocr_st.get('error_msg', 'unknown')}")
+                st.error(f"❌ OCR error: {_ocr_st.get('error_msg', 'unknown')}")
                 st.session_state.pop("ocr_polling", None)
     except Exception as _e:
-        st.warning(f"Не удалось получить статус OCR: {_e}")
+        st.warning(f"Failed to get OCR status: {_e}")
         st.session_state.pop("ocr_polling", None)
 
 col_left, col_main, col_right = st.columns([0.65, 3.0, 1.35])
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LEFT — документы, фильтры, статистика
+# LEFT — documents, filters, stats
 # ══════════════════════════════════════════════════════════════════════════════
 with col_left:
-    st.markdown("### 📁 Документы")
-    if st.button("↩ Сменить документ", use_container_width=True, key="btn_change_doc"):
+    st.markdown("### 📁 Documents")
+    if st.button("↩ Change document", use_container_width=True, key="btn_change_doc"):
         st.session_state.pop("viewer_doc_id", None)
         st.rerun()
     docs = fetch_documents()
@@ -520,23 +509,23 @@ with col_left:
             st.rerun()
 
     st.markdown("---")
-    st.markdown("### 🎨 Фильтры")
+    st.markdown("### 🎨 Filters")
     show_types = set()
-    if st.checkbox("📝 Text",    value=True): show_types.add("text")
-    if st.checkbox("📊 Table",        value=True): show_types.add("table")
-    if st.checkbox("📊 Таблица простая", value=True): show_types.add("table_simple")
-    if st.checkbox("📊 Таблица сложная", value=True): show_types.add("table_complex")
-    if st.checkbox("➗ Formula", value=True): show_types.add("formula")
-    if st.checkbox("🖼 Figure",  value=True): show_types.add("figure")
+    if st.checkbox("📝 Text",          value=True): show_types.add("text")
+    if st.checkbox("📊 Table",         value=True): show_types.add("table")
+    if st.checkbox("📊 Simple table",  value=True): show_types.add("table_simple")
+    if st.checkbox("📊 Complex table", value=True): show_types.add("table_complex")
+    if st.checkbox("➗ Formula",       value=True): show_types.add("formula")
+    if st.checkbox("🖼 Figure",        value=True): show_types.add("figure")
 
     st.markdown("---")
-    st.markdown("### 📊 Страница")
+    st.markdown("### 📊 Page")
     st.caption(f"📄 {doc_name[:28]}")
     page_blocks_cur = [b for b in all_blocks
                        if b.get("page_num") == st.session_state.viewer_page]
     type_counts = Counter(b.get("block_type") for b in page_blocks_cur)
-    st.metric("Страниц", total_pages)
-    st.metric("Всего блоков", len(all_blocks))
+    st.metric("Pages", total_pages)
+    st.metric("Total blocks", len(all_blocks))
     for btype, cnt in sorted(type_counts.items()):
         emoji = {"text": "🔵", "table": "🟠", "table_simple": "🟡", "table_complex": "🟠", "formula": "🟢", "figure": "🟣"}.get(btype, "⚪")
         st.caption(f"{emoji} {btype}: {cnt}")
@@ -544,14 +533,13 @@ with col_left:
     if nr:
         st.markdown(f"🔴 **needs_review: {nr}**")
 
-    # ── Кнопка запуска финального OCR ─────────────────────────────────────
     st.markdown("---")
     total_blocks_count  = len(all_blocks)
     marked_blocks_count = sum(1 for b in all_blocks if b.get("block_type"))
     if total_blocks_count > 0:
-        st.markdown("**🎯 Распознавание**")
-        st.caption(f"Размечено блоков: {marked_blocks_count}")
-        if st.button("✅ Выбрать модели и запустить",
+        st.markdown("**🎯 Recognition**")
+        st.caption(f"Annotated blocks: {marked_blocks_count}")
+        if st.button("✅ Select models & run",
                      use_container_width=True, type="primary",
                      key="btn_open_model_dialog"):
             model_selection_dialog(doc_id, all_blocks)
@@ -559,10 +547,10 @@ with col_left:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN — навигация + изображение + список блоков
+# MAIN — navigation + image + block list
 # ══════════════════════════════════════════════════════════════════════════════
 with col_main:
-    # ── Навигация ─────────────────────────────────────────────────────────
+    # ── Navigation ────────────────────────────────────────────────────────
     n1, n2, n3, n4, n5 = st.columns([1, 1, 2, 1, 1])
     with n1:
         if st.button("⏮", use_container_width=True):
@@ -576,7 +564,7 @@ with col_main:
             st.session_state.viewer_canvas_version += 1
     with n3:
         new_page = st.number_input(
-            "Стр.", min_value=1, max_value=total_pages,
+            "Page", min_value=1, max_value=total_pages,
             value=st.session_state.viewer_page,
             label_visibility="collapsed",
         )
@@ -595,14 +583,14 @@ with col_main:
             st.session_state.viewer_selected_block  = None
             st.session_state.viewer_canvas_version += 1
 
-    st.caption(f"Страница {st.session_state.viewer_page} / {total_pages}")
+    st.caption(f"Page {st.session_state.viewer_page} / {total_pages}")
 
-    # ── Тулбар: переключатель режима, выбор типа, undo ────────────────────
+    # ── Toolbar: mode toggle, type select, undo ───────────────────────────
     is_draw = st.session_state.viewer_draw_mode
     tc1, tc2, tc3 = st.columns([1, 3, 1])
     with tc1:
         if st.button(
-            "👆 Выбор" if is_draw else "✏️ Рисовать",
+            "👆 Select" if is_draw else "✏️ Draw",
             use_container_width=True,
             type="secondary" if is_draw else "primary",
             key="toggle_mode",
@@ -616,7 +604,7 @@ with col_main:
             icons = {"text": "📝", "table": "📊", "table_simple": "📊", "table_complex": "📊", "formula": "➗", "figure": "🖼"}
             prev_type = st.session_state.viewer_draw_type
             new_type = st.selectbox(
-                "тип",
+                "type",
                 type_opts,
                 index=type_opts.index(prev_type),
                 format_func=lambda t: f"{icons[t]} {t}",
@@ -635,12 +623,12 @@ with col_main:
             use_container_width=True,
             disabled=len(_stk) == 0,
             key="btn_undo_top",
-            help=f"Отменить последнее действие ({len(_stk)} в стеке)" if _stk else "Нет действий для отмены",
+            help=f"Undo last action ({len(_stk)} in stack)" if _stk else "No actions to undo",
         ):
             if _do_undo():
                 st.rerun()
 
-    # ── Изображение ───────────────────────────────────────────────────────
+    # ── Image ─────────────────────────────────────────────────────────────
     page_img, orig_w, orig_h, scale = fetch_page_image(
         doc_id, st.session_state.viewer_page
     )
@@ -678,7 +666,6 @@ with col_main:
                 key=canvas_key,
             )
 
-            # Ищем нарисованный прямоугольник
             _drawn_rect = None
             if canvas_result is not None and canvas_result.json_data is not None:
                 _rects = [
@@ -712,7 +699,7 @@ with col_main:
                 )
                 ab1, ab2 = st.columns([2, 1])
                 with ab1:
-                    if st.button("✅ Добавить блок", use_container_width=True,
+                    if st.button("✅ Add block", use_container_width=True,
                                  type="primary", key="btn_canvas_add"):
                         try:
                             resp = httpx.post(
@@ -736,18 +723,18 @@ with col_main:
                                 st.session_state.viewer_selected_block = new_id
                                 st.rerun()
                             else:
-                                st.error(f"Ошибка {resp.status_code}: {resp.text[:80]}")
+                                st.error(f"Error {resp.status_code}: {resp.text[:80]}")
                         except Exception as e:
                             st.error(str(e))
                 with ab2:
-                    if st.button("🔄 Перерисовать", use_container_width=True, key="btn_redraw"):
+                    if st.button("🔄 Redraw", use_container_width=True, key="btn_redraw"):
                         st.session_state.viewer_canvas_version += 1
                         st.rerun()
             else:
-                st.info("🖱 Нарисуй прямоугольник для нового блока (drag)", icon=None)
+                st.info("🖱 Draw a rectangle for a new block (drag)", icon=None)
 
         elif st.session_state.viewer_mode == "edit" and st.session_state.viewer_selected_block:
-            # ── EDIT MODE: st_canvas transform (drag bbox выбранного блока) ──
+            # ── EDIT MODE: st_canvas transform ────────────────────────────
             _sel = next(
                 (b for b in all_blocks if b["block_id"] == st.session_state.viewer_selected_block),
                 None,
@@ -804,7 +791,6 @@ with col_main:
                         ny1  = max(0, int(_nt / scale))
                         nx2  = min(orig_w, int((_nl + _nw) / scale))
                         ny2  = min(orig_h, int((_nt + _nh) / scale))
-                        # Сохраняем pending если координаты значимо изменились
                         if max(abs(nx1-_ex1), abs(ny1-_ey1), abs(nx2-_ex2), abs(ny2-_ey2)) > 3:
                             st.session_state["pending_bbox"]     = [nx1, ny1, nx2, ny2]
                             st.session_state["pending_bbox_for"] = st.session_state.viewer_selected_block
@@ -812,20 +798,17 @@ with col_main:
                 st.session_state.viewer_mode = None
 
         else:
-            # ── VIEW MODE: streamlit_image_coordinates (клик → выбор блока) ──
+            # ── VIEW MODE: streamlit_image_coordinates (click to select block) ──
             coords = streamlit_image_coordinates(
                 annotated,
                 width=img_w,
                 key=f"viewer_{doc_id}_{st.session_state.viewer_page}",
             )
             if coords is not None:
-                # Coord-guard: игнорируем replay старого значения компонента.
-                # Ключ включает canvas_version → автоматически сбрасывается
-                # при смене страницы/документа/режима.
                 _cv = st.session_state.viewer_canvas_version
                 _coord_key = (_cv, coords["x"], coords["y"])
                 if _coord_key == st.session_state.get("canvas_last_coord"):
-                    coords = None  # это replay — подавляем
+                    coords = None
                 else:
                     st.session_state["canvas_last_coord"] = _coord_key
 
@@ -849,11 +832,11 @@ with col_main:
                     st.session_state.viewer_mode           = None
                     st.rerun()
     else:
-        st.warning("Изображение страницы недоступно")
+        st.warning("Page image unavailable")
 
-    # ── Список блоков ──────────────────────────────────────────────────────
+    # ── Block list ────────────────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("**Блоки на странице:**")
+    st.markdown("**Blocks on page:**")
     page_blocks_filtered = [
         b for b in all_blocks
         if b.get("page_num") == st.session_state.viewer_page
@@ -885,13 +868,13 @@ with col_main:
                         st.session_state.viewer_mode           = None
                         st.rerun()
     else:
-        st.caption("Нет блоков на этой странице")
+        st.caption("No blocks on this page")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RIGHT — детали блока
+# RIGHT — block details
 # ══════════════════════════════════════════════════════════════════════════════
 with col_right:
-    st.markdown("### 🔧 Инструменты")
+    st.markdown("### 🔧 Tools")
     selected_id = st.session_state.viewer_selected_block
 
     if not selected_id:
@@ -901,15 +884,15 @@ with col_right:
             st.markdown(
                 f"<div style='padding:12px;background:rgba({rgb[0]},{rgb[1]},{rgb[2]},0.1);"
                 f"border:1px solid {TYPE_HEX[draw_type]};border-radius:8px'>"
-                f"<b>✏️ Режим рисования ({draw_type})</b><br><br>"
-                f"1. Зажми кнопку мыши и <b>нарисуй прямоугольник</b><br>"
-                f"2. Нажми <b>«Добавить блок»</b></div>",
+                f"<b>✏️ Draw mode ({draw_type})</b><br><br>"
+                f"1. Hold mouse button and <b>draw a rectangle</b><br>"
+                f"2. Click <b>«Add block»</b></div>",
                 unsafe_allow_html=True,
             )
         else:
-            st.caption("Кликни блок на изображении или выбери из списка")
+            st.caption("Click a block on the image or select from list")
         st.markdown("---")
-        st.markdown("**📤 Экспорт**")
+        st.markdown("**📤 Export**")
         _has_ocr = any(
             b.get("status") in ("ocr_done", "accepted", "needs_review")
             for b in all_blocks
@@ -919,7 +902,7 @@ with col_right:
 
     block = next((b for b in all_blocks if b["block_id"] == selected_id), None)
     if not block:
-        st.warning("Блок не найден")
+        st.warning("Block not found")
         st.stop()
 
     btype   = block.get("block_type", "—")
@@ -934,7 +917,7 @@ with col_right:
 
     st.markdown(f"**{type_icon} {btype.upper()}**")
     st.caption(f"`{selected_id}`")
-    st.markdown(f"Статус: {status_icon} `{bstatus}`")
+    st.markdown(f"Status: {status_icon} `{bstatus}`")
     st.markdown(f"Conf: `{conf:.2f}`")
 
     _preview_bust = st.session_state.get(f"preview_bust_{selected_id}", 0)
@@ -942,17 +925,16 @@ with col_right:
     if _preview_bytes:
         st.image(_preview_bytes, use_container_width=True)
     else:
-        st.caption("Нет превью")
+        st.caption("No preview")
 
-    # ── Геометрия и тип ───────────────────────────────────────────────────
-    with st.expander("✏️ Геометрия и тип", expanded=False):
-        # Тип — сохраняется немедленно при изменении
+    # ── Geometry & type ───────────────────────────────────────────────────
+    with st.expander("✏️ Geometry & type", expanded=False):
         _type_opts = ["text", "table", "table_simple", "table_complex", "formula", "figure"]
         new_type = st.selectbox(
-            "Тип",
+            "Type",
             _type_opts,
             index=_type_opts.index(btype) if btype in _type_opts else 0,
-            key=f"sel_type_{selected_id}_{btype}",  # key со значением → сброс при undo
+            key=f"sel_type_{selected_id}_{btype}",
         )
         if new_type != btype:
             _stk = st.session_state.undo_stack
@@ -970,32 +952,30 @@ with col_right:
                     st.rerun()
                 else:
                     _stk.pop()
-                    st.error(f"Ошибка: {_r.text[:60]}")
+                    st.error(f"Error: {_r.text[:60]}")
             except Exception as _e:
                 _stk.pop()
                 st.error(str(_e))
 
         st.divider()
 
-        # Геометрия — редактирование через drag на канвасе
         _edit_active = st.session_state.viewer_mode == "edit"
         if not _edit_active:
             if st.button(
-                "📐 Редактировать геометрию",
+                "📐 Edit geometry",
                 type="primary",
                 use_container_width=True,
                 key="btn_edit_geom",
             ):
-                # Сбрасываем старый pending при входе в edit
                 st.session_state.pop("pending_bbox", None)
                 st.session_state.pop("pending_bbox_for", None)
                 st.session_state.viewer_mode           = "edit"
                 st.session_state.viewer_canvas_version += 1
                 st.rerun()
             st.caption(f"bbox: {bbox[0]}, {bbox[1]} → {bbox[2]}, {bbox[3]}")
-            st.caption(f"размер: {bbox[2]-bbox[0]} × {bbox[3]-bbox[1]} px")
+            st.caption(f"size: {bbox[2]-bbox[0]} × {bbox[3]-bbox[1]} px")
         else:
-            st.info("Тяни за углы или стороны рамки на изображении.", icon=None)
+            st.info("Drag corners or sides of the bounding box on the image.", icon=None)
 
             _pending     = st.session_state.get("pending_bbox")
             _pending_for = st.session_state.get("pending_bbox_for")
@@ -1008,7 +988,7 @@ with col_right:
             _sc1, _sc2 = st.columns(2)
             with _sc1:
                 if st.button(
-                    "💾 Сохранить",
+                    "💾 Save",
                     type="primary",
                     disabled=not _has_pending,
                     use_container_width=True,
@@ -1035,13 +1015,13 @@ with col_right:
                             st.rerun()
                         else:
                             _stk.pop()
-                            st.error(f"Ошибка: {_r.text[:60]}")
+                            st.error(f"Error: {_r.text[:60]}")
                     except Exception as _e:
                         _stk.pop()
                         st.error(str(_e))
             with _sc2:
                 if st.button(
-                    "✕ Отмена",
+                    "✕ Cancel",
                     type="secondary",
                     use_container_width=True,
                     key="btn_cancel_geom",
@@ -1052,15 +1032,15 @@ with col_right:
                     st.session_state.viewer_canvas_version += 1
                     st.rerun()
 
-    # ── Удалить блок ──────────────────────────────────────────────────────
+    # ── Delete block ──────────────────────────────────────────────────────
     if not st.session_state.viewer_confirm_delete:
-        if st.button("🗑 Удалить блок", use_container_width=True, key="btn_del"):
+        if st.button("🗑 Delete block", use_container_width=True, key="btn_del"):
             st.session_state.viewer_confirm_delete = True
     else:
-        st.warning("⚠️ Удалить безвозвратно?")
+        st.warning("⚠️ Delete permanently?")
         dc1, dc2 = st.columns(2)
         with dc1:
-            if st.button("✅ Да", use_container_width=True, type="primary", key="btn_del_yes"):
+            if st.button("✅ Yes", use_container_width=True, type="primary", key="btn_del_yes"):
                 _stk = st.session_state.undo_stack
                 _stk.append({"action": "delete", "block_id": selected_id, "snapshot": dict(block)})
                 if len(_stk) > 10:
@@ -1076,7 +1056,7 @@ with col_right:
                 fetch_blocks.clear()
                 st.rerun()
         with dc2:
-            if st.button("❌ Нет", use_container_width=True, key="btn_del_no"):
+            if st.button("❌ No", use_container_width=True, key="btn_del_no"):
                 st.session_state.viewer_confirm_delete = False
 
     st.markdown("---")
@@ -1127,13 +1107,13 @@ with col_right:
                 key=f"output_display_{selected_id}",
             )
     else:
-        st.caption("Нет OCR output")
+        st.caption("No OCR output")
 
     if st.session_state.viewer_edit_mode and btype not in ("table", "table_simple", "table_complex", "formula"):
         new_output = st.text_area(
-            "✏️ Редактировать:", value=output, height=120, key=f"edit_output_{selected_id}"
+            "✏️ Edit:", value=output, height=120, key=f"edit_output_{selected_id}"
         )
-        if st.button("💾 Сохранить текст", use_container_width=True,
+        if st.button("💾 Save text", use_container_width=True,
                      type="primary", key="save_text"):
             try:
                 resp = httpx.patch(
@@ -1143,34 +1123,34 @@ with col_right:
                 if resp.status_code == 200:
                     fetch_blocks.clear()
                     st.session_state.viewer_edit_mode = False
-                    st.success("✅ Сохранено")
+                    st.success("✅ Saved")
                     st.rerun()
                 else:
-                    st.error("Ошибка")
+                    st.error("Error")
             except Exception as e:
                 st.error(str(e))
 
     st.markdown("---")
-    st.markdown("**Действия:**")
+    st.markdown("**Actions:**")
     a1, a2 = st.columns(2)
     with a1:
-        if st.button("✅ Принять", use_container_width=True, key="btn_accept",
-                     help="Отметить блок как проверенный (без правки)"):
+        if st.button("✅ Accept", use_container_width=True, key="btn_accept",
+                     help="Mark block as reviewed (no changes)"):
             httpx.patch(f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
                         json={"status": "accepted"}, timeout=5)
             fetch_blocks.clear()
             st.rerun()
-        if st.button("✏️ Править", use_container_width=True, key="btn_edit",
-                     help="Открыть редактор OCR output"):
+        if st.button("✏️ Edit", use_container_width=True, key="btn_edit",
+                     help="Open OCR output editor"):
             st.session_state.viewer_edit_mode = not st.session_state.viewer_edit_mode
     with a2:
-        if st.button("🔖 В Review", use_container_width=True, key="btn_review",
-                     help="Пометить как требующий проверки"):
+        if st.button("🔖 Flag review", use_container_width=True, key="btn_review",
+                     help="Mark as needing review"):
             httpx.patch(f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
                         json={"status": "needs_review"}, timeout=5)
             fetch_blocks.clear()
             st.rerun()
-        if st.button("⏭ След. блок", use_container_width=True, key="btn_next"):
+        if st.button("⏭ Next block", use_container_width=True, key="btn_next"):
             page_ids = [b["block_id"] for b in page_blocks_filtered]
             if selected_id in page_ids:
                 idx = page_ids.index(selected_id)
@@ -1179,25 +1159,21 @@ with col_right:
                     st.session_state.viewer_edit_mode = False
                     st.rerun()
 
-    # ── КНОПКА "В ОБУЧЕНИЕ" ───────────────────────────────────────────────
-    # Показываем только когда пользователь что-то правил
     if st.session_state.viewer_edit_mode or block.get("original_output"):
         st.markdown("---")
         orig = block.get("original_output") or output
         cur  = output
 
         if orig != cur:
-            # Уже есть расхождение — предлагаем сохранить как пару
             st.markdown(
                 "<div style='padding:8px;background:rgba(22,163,74,0.1);"
                 "border-left:3px solid #16a34a;border-radius:4px;font-size:12px'>"
-                "📊 Оригинал модели и текущий output отличаются</div>",
+                "📊 Model original and current output differ</div>",
                 unsafe_allow_html=True,
             )
-            if st.button("📚 В обучение", use_container_width=True,
+            if st.button("📚 Add to training", use_container_width=True,
                          type="primary", key="btn_to_train"):
                 try:
-                    # Если пользователь в режиме правки — берём текст из textarea
                     edit_key = f"edit_output_{selected_id}"
                     edited_text = st.session_state.get(edit_key, cur)
                     train_orig   = orig if orig != cur else output
@@ -1220,11 +1196,11 @@ with col_right:
                     if resp.status_code == 200:
                         data = resp.json()
                         st.success(
-                            f"✅ Пара #{data.get('pair_id','?')[:16]} сохранена. "
-                            f"Всего: {data.get('total_pairs', '?')} пар"
+                            f"✅ Pair #{data.get('pair_id','?')[:16]} saved. "
+                            f"Total: {data.get('total_pairs', '?')} pairs"
                         )
                     else:
-                        st.error(f"Ошибка: {resp.json().get('detail', resp.text[:80])}")
+                        st.error(f"Error: {resp.json().get('detail', resp.text[:80])}")
                 except Exception as e:
                     st.error(str(e))
 
@@ -1232,7 +1208,6 @@ with col_right:
     st.markdown("---")
     st.markdown("**🔁 OCR:**")
 
-    # Inline выбор модели для текущего блока
     _sel_btype = next((b.get("block_type") for b in all_blocks if b.get("block_id") == selected_id), None)
     _block_model_id = st.session_state.get("viewer_model_choices", {}).get(_sel_btype)
     if _sel_btype:
@@ -1245,7 +1220,7 @@ with col_right:
             ]
             _default_idx = _opts.index(_block_model_id) if _block_model_id in _opts else 0
             _chosen = st.selectbox(
-                "Модель для этого блока",
+                "Model for this block",
                 options=_opts,
                 index=_default_idx,
                 format_func=lambda x, _o=_opts, _l=_opt_labels: _l[_o.index(x)],
@@ -1256,8 +1231,8 @@ with col_right:
 
     oc1, oc2 = st.columns(2)
     with oc1:
-        if st.button("▶ Этот блок", use_container_width=True, key="btn_ocr_block",
-                     help="Запустить OCR только для выбранного блока"):
+        if st.button("▶ This block", use_container_width=True, key="btn_ocr_block",
+                     help="Run OCR for the selected block only"):
             try:
                 resp = httpx.post(
                     f"{BACKEND_URL}/processing/{doc_id}/ocr-block/{selected_id}",
@@ -1266,15 +1241,15 @@ with col_right:
                 )
                 if resp.status_code == 200:
                     fetch_blocks.clear()
-                    st.success("✅ OCR готов")
+                    st.success("✅ OCR done")
                     st.rerun()
                 else:
                     st.error(f"{resp.status_code}: {resp.text[:60]}")
             except Exception as e:
                 st.error(str(e))
     with oc2:
-        if st.button("▶ Весь doc", use_container_width=True, key="btn_ocr_all",
-                     help="Запустить OCR для всего документа в фоне"):
+        if st.button("▶ Full doc", use_container_width=True, key="btn_ocr_all",
+                     help="Run OCR for entire document in background"):
             try:
                 _choices = st.session_state.get("viewer_model_choices", {})
                 resp = httpx.post(
@@ -1283,13 +1258,13 @@ with col_right:
                     timeout=10,
                 )
                 if resp.status_code == 200:
-                    st.success("⏳ OCR запущен в фоне")
+                    st.success("⏳ OCR started in background")
                 else:
                     st.error(f"{resp.status_code}")
             except Exception as e:
                 st.error(str(e))
 
-    st.markdown("**📤 Экспорт**")
+    st.markdown("**📤 Export**")
     _has_ocr2 = any(
         b.get("status") in ("ocr_done", "accepted", "needs_review")
         for b in all_blocks
