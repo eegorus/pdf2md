@@ -197,8 +197,11 @@ elif st.session_state.upload_stage == "mode":
         if st.button("🔬 Detailed mode", use_container_width=True):
             with st.spinner("Starting layout detection..."):
                 try:
+                    _token = st.session_state.get("access_token")
                     resp = httpx.post(
-                        f"{BACKEND_URL}/processing/{doc_id}/start", timeout=10
+                        f"{BACKEND_URL}/processing/{doc_id}/start",
+                        headers={"Authorization": f"Bearer {_token}"} if _token else {},
+                        timeout=10,
                     )
                     if resp.status_code == 400 and "layout_already_done" in resp.text:
                         st.session_state["viewer_doc_id"] = doc_id
