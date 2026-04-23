@@ -58,6 +58,11 @@ UI: `http://localhost:8501` | Manual testing only (no test suite)
 - `pages/2_Viewer.py` — canvas, draw/edit blocks, undo (1000+ LOC)
 - `pages/4_MarkdownViewer.py` — edit markdown, LaTeX toolbar, find & replace
 
+**Frontend API pattern:**
+- Each page defines a local `api(method, path, **kw)` that reads `st.session_state["access_token"]` and injects `Authorization: Bearer` header; returns raw `httpx.Response` or `None`
+- `@st.cache_data` helpers accept `token: str = ""` as explicit param (so cache key includes the token); call them with `st.session_state.get("access_token", "")`
+- Never use bare `httpx.*` calls outside of cache helpers
+
 **Viewer session state:** `viewer_doc_id`, `viewer_page`, `viewer_selected_block`, `viewer_draw_mode`, `viewer_mode` ("edit" or None), `viewer_canvas_version`, `undo_stack` (max 10)
 
 **Canvas modes:** View (click to select) | Draw (st_canvas rect) | Edit (st_canvas transform)
@@ -84,7 +89,11 @@ JWT_SECRET_KEY=<64-char hex>
 FERNET_KEY=<base64 32-byte key>
 ```
 
-## Current Status (2026-04-21)
+## Current Status (2026-04-22)
+
+**Last completed (2026-04-22):**
+- ✅ Auth token injected in all API calls in `2_Viewer.py` and `4_MarkdownViewer.py` — fixed 401 errors on page images, blocks, block previews
+- ✅ Local `api(method, path, **kw)` helper pattern established in all frontend pages
 
 **Last completed (2026-04-21):**
 - ✅ `/users/me` router — profile, password, per-user encrypted API keys
@@ -92,13 +101,13 @@ FERNET_KEY=<base64 32-byte key>
 - ✅ Frontend: login/register page (`0Auth.py`)
 - ✅ Auth guard on all protected pages (1_Upload, 2_Viewer, 4_MarkdownViewer)
 - ✅ Sidebar user block with logout
-- ✅ Bearer token auto-injection in all API calls
 
 **Features:**
 - ✅ Multi-user with JWT tokens (30 min access, 14 day refresh)
 - ✅ Document ownership checks (admin bypass)
 - ✅ API key encryption (Fernet) — per-user in DB, with settings.json fallback
 - ✅ Frontend auth flow: register → login → token storage → app access
+- ✅ Bearer token injected in all API calls across all pages
 - ✅ Polling OCR with cancel support
 - ✅ Block undo/redo (max 10)
 - ✅ Draw/edit blocks via canvas
@@ -109,13 +118,11 @@ FERNET_KEY=<base64 32-byte key>
 
 **Known issues:**
 - `0Auth.py` and `0_Settings.py` both start with `0` (alphabetically `0Auth` first)
-- `2_Viewer.py`, `4_MarkdownViewer.py` use raw httpx for some calls (no auth yet) — works because pages blocked by require_auth
 
 **Next priorities:**
 1. Test full auth cycle: register → login → upload → OCR → export via UI
-2. Consolidate API helpers (2_Viewer, 4_MarkdownViewer use httpx directly)
-3. Token refresh on 401 (currently just logs out)
-4. Deploy with ~20GB models on RTX 4090
+2. Token refresh on 401 (currently just logs out)
+3. Deploy with ~20GB models on RTX 4090
 
 ## Compact Instructions
 

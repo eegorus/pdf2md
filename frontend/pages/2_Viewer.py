@@ -11,6 +11,21 @@ from collections import Counter
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
+
+def api(method: str, path: str, **kw):
+    """Authenticated httpx request; returns raw Response or None on error."""
+    try:
+        headers = kw.pop("headers", {})
+        token = st.session_state.get("access_token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        kw.setdefault("timeout", 60)
+        return httpx.request(method, f"{BACKEND_URL}{path}", headers=headers, **kw)
+    except Exception as e:
+        st.error(f"API error ({path}): {e}")
+        return None
+
+
 st.set_page_config(
     page_title="Viewer — PRMS",
     layout="wide",
@@ -36,26 +51,30 @@ TYPE_HEX = {
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=30)
-def fetch_documents():
+def fetch_documents(token: str = ""):
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        r = httpx.get(f"{BACKEND_URL}/documents/", timeout=5)
+        r = httpx.get(f"{BACKEND_URL}/documents/", headers=headers, timeout=5)
         return r.json().get("documents", [])
     except Exception:
         return []
 
 @st.cache_data(ttl=10)
-def fetch_blocks(doc_id: str):
+def fetch_blocks(doc_id: str, token: str = ""):
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        r = httpx.get(f"{BACKEND_URL}/processing/{doc_id}/results", timeout=10)
+        r = httpx.get(f"{BACKEND_URL}/processing/{doc_id}/results", headers=headers, timeout=10)
         return r.json().get("blocks", [])
     except Exception:
         return []
 
 @st.cache_data(ttl=5)
-def fetch_block_preview(doc_id: str, block_id: str, _bust: int = 0) -> bytes | None:
+def fetch_block_preview(doc_id: str, block_id: str, token: str = "", _bust: int = 0) -> bytes | None:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         resp = httpx.get(
             f"{BACKEND_URL}/documents/{doc_id}/block-image/{block_id}",
+            headers=headers,
             timeout=5,
         )
         if resp.status_code == 200:
@@ -66,19 +85,21 @@ def fetch_block_preview(doc_id: str, block_id: str, _bust: int = 0) -> bytes | N
 
 
 @st.cache_data(ttl=60)
-def fetch_available_models() -> dict:
+def fetch_available_models(token: str = "") -> dict:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        r = httpx.get(f"{BACKEND_URL}/settings/available-models", timeout=5)
+        r = httpx.get(f"{BACKEND_URL}/settings/available-models", headers=headers, timeout=5)
         return r.json()
     except Exception:
         return {}
 
 
 @st.cache_data(ttl=60)
-def fetch_page_image(doc_id: str, page_num: int, max_w: int = 740, max_h: int = 960):
+def fetch_page_image(doc_id: str, page_num: int, token: str = "", max_w: int = 740, max_h: int = 960):
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         r = httpx.get(
-            f"{BACKEND_URL}/documents/{doc_id}/page-image/{page_num}", timeout=15
+            f"{BACKEND_URL}/documents/{doc_id}/page-image/{page_num}", headers=headers, timeout=15
         )
         if r.status_code == 200:
             img = Image.open(io.BytesIO(r.content)).convert("RGB")
@@ -104,31 +125,19 @@ def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
         if has_ocr:
             if st.button(label, use_container_width=True, key=f"{key_prefix}_gen_{fmt}"):
                 with st.spinner(f"Generating {fmt}..."):
-                    try:
-                        httpx.post(
-                            f"{BACKEND_URL}/processing/{doc_id}/export?format={fmt}",
-                            timeout=60,
-                        )
-                        if fmt == "markdown":
-                            dl = httpx.get(
-                                f"{BACKEND_URL}/processing/{doc_id}/export-zip",
-                                timeout=30,
-                            )
-                        else:
-                            dl = httpx.get(
-                                f"{BACKEND_URL}/processing/{doc_id}/export-file/{fmt}",
-                                timeout=30,
-                            )
-                        if dl.status_code == 200:
-                            st.session_state[cache_key] = {
-                                "content":  dl.content,
-                                "filename": f"{doc_id[:8]}.{ext}",
-                                "mime":     mime,
-                            }
-                        else:
-                            st.error(f"Export error: {dl.status_code}")
-                    except Exception as e:
-                        st.error(str(e))
+                    api("POST", f"/processing/{doc_id}/export?format={fmt}", timeout=60)
+                    if fmt == "markdown":
+                        dl = api("GET", f"/processing/{doc_id}/export-zip", timeout=30)
+                    else:
+                        dl = api("GET", f"/processing/{doc_id}/export-file/{fmt}", timeout=30)
+                    if dl and dl.status_code == 200:
+                        st.session_state[cache_key] = {
+                            "content":  dl.content,
+                            "filename": f"{doc_id[:8]}.{ext}",
+                            "mime":     mime,
+                        }
+                    elif dl:
+                        st.error(f"Export error: {dl.status_code}")
 
             cached = st.session_state.get(cache_key)
             if cached:
@@ -219,7 +228,7 @@ doc_id = st.session_state.get("viewer_doc_id") or st.session_state.get("viewer_d
 if not doc_id:
     st.markdown("### 📁 Select document")
 
-    docs = fetch_documents()
+    docs = fetch_documents(st.session_state.get("access_token", ""))
 
     if not docs:
         st.info("No documents found. Go to the **Upload** page.")
@@ -259,7 +268,7 @@ if not doc_id:
 
     st.stop()
 
-all_blocks = fetch_blocks(doc_id)
+all_blocks = fetch_blocks(doc_id, st.session_state.get("access_token", ""))
 doc_name = st.session_state.get("current_doc_name", doc_id)
 
 
@@ -272,26 +281,20 @@ def _do_undo() -> bool:
     try:
         if _act == "delete":
             _snap = _entry["snapshot"]
-            _r = httpx.post(
-                f"{BACKEND_URL}/processing/{doc_id}/blocks",
-                json={
-                    "block_type": _snap.get("block_type"),
-                    "page_num":   _snap.get("page_num"),
-                    "bbox":       _snap.get("bbox"),
-                },
-                timeout=10,
-            )
-            if _r.status_code == 200:
+            _r = api("POST", f"/processing/{doc_id}/blocks",
+                     json={
+                         "block_type": _snap.get("block_type"),
+                         "page_num":   _snap.get("page_num"),
+                         "bbox":       _snap.get("bbox"),
+                     }, timeout=10)
+            if _r and _r.status_code == 200:
                 st.session_state.viewer_selected_block = _r.json().get("block_id")
                 _stk.pop()
                 fetch_blocks.clear()
                 return True
         elif _act == "add":
-            _r = httpx.delete(
-                f"{BACKEND_URL}/processing/{doc_id}/blocks/{_entry['block_id']}",
-                timeout=5,
-            )
-            if _r.status_code in (200, 204, 404):
+            _r = api("DELETE", f"/processing/{doc_id}/blocks/{_entry['block_id']}", timeout=5)
+            if _r and _r.status_code in (200, 204, 404):
                 if st.session_state.viewer_selected_block == _entry["block_id"]:
                     st.session_state.viewer_selected_block = None
                 _stk.pop()
@@ -299,17 +302,14 @@ def _do_undo() -> bool:
                 return True
         elif _act == "patch":
             _snap = _entry["snapshot"]
-            _r = httpx.patch(
-                f"{BACKEND_URL}/processing/{doc_id}/blocks/{_entry['block_id']}",
-                json={
-                    "block_type": _snap.get("block_type"),
-                    "bbox":       _snap.get("bbox"),
-                    "output":     _snap.get("output"),
-                    "status":     _snap.get("status"),
-                },
-                timeout=5,
-            )
-            if _r.status_code == 200:
+            _r = api("PATCH", f"/processing/{doc_id}/blocks/{_entry['block_id']}",
+                     json={
+                         "block_type": _snap.get("block_type"),
+                         "bbox":       _snap.get("bbox"),
+                         "output":     _snap.get("output"),
+                         "status":     _snap.get("status"),
+                     }, timeout=5)
+            if _r and _r.status_code == 200:
                 _stk.pop()
                 fetch_blocks.clear()
                 return True
@@ -317,24 +317,18 @@ def _do_undo() -> bool:
         st.toast(f"Undo: {_e}", icon="❌")
     return False
 
-try:
-    r = httpx.get(f"{BACKEND_URL}/processing/{doc_id}/status", timeout=5)
-    total_pages = r.json().get("page_count", 1)
-except Exception:
-    total_pages = 1
+_status_r = api("GET", f"/processing/{doc_id}/status", timeout=5)
+total_pages = _status_r.json().get("page_count", 1) if _status_r and _status_r.status_code == 200 else 1
 
 
 # ─── MODEL SELECTION DIALOG ───────────────────────────────────────────────────
 @st.dialog("🎯 Select models for recognition", width="large")
 def model_selection_dialog(doc_id: str, all_blocks: list):
-    import httpx as _httpx
-
-    try:
-        r = _httpx.get(f"{BACKEND_URL}/settings/available-models", timeout=5)
-        avail = r.json()
-    except Exception as e:
-        st.error(f"Failed to load model list: {e}")
+    r = api("GET", "/settings/available-models", timeout=5)
+    if r is None or r.status_code != 200:
+        st.error("Failed to load model list")
         return
+    avail = r.json()
 
     present_types = sorted(set(
         b.get("block_type") for b in all_blocks
@@ -400,19 +394,16 @@ def model_selection_dialog(doc_id: str, all_blocks: list):
                      use_container_width=True, key="modal_run"):
             st.session_state.viewer_model_choices = choices
             try:
-                resp = _httpx.post(
-                    f"{BACKEND_URL}/processing/{doc_id}/ocr",
-                    json={"model_choices": choices},
-                    timeout=15,
-                )
-                if resp.status_code == 200:
+                resp = api("POST", f"/processing/{doc_id}/ocr",
+                           json={"model_choices": choices}, timeout=15)
+                if resp and resp.status_code == 200:
                     result = resp.json()
                     if result.get("status") in ("started", "already_running"):
                         st.session_state["viewer_model_dialog_open"] = False
                         st.session_state["ocr_polling"] = True
                         st.session_state["ocr_doc_id"]  = doc_id
                         st.rerun()
-                else:
+                elif resp:
                     st.error(f"Launch error: {resp.status_code} — {resp.text[:200]}")
             except Exception as e:
                 st.error(str(e))
@@ -424,10 +415,8 @@ def model_selection_dialog(doc_id: str, all_blocks: list):
 # ── OCR polling ──────────────────────────────────────────────────────────────
 if st.session_state.get("ocr_polling") and st.session_state.get("ocr_doc_id") == doc_id:
     try:
-        _ocr_resp = httpx.get(
-            f"{BACKEND_URL}/processing/{doc_id}/ocr-status", timeout=5
-        )
-        if _ocr_resp.status_code == 200:
+        _ocr_resp = api("GET", f"/processing/{doc_id}/ocr-status", timeout=5)
+        if _ocr_resp and _ocr_resp.status_code == 200:
             _ocr_st   = _ocr_resp.json()
             _processed = _ocr_st.get("processed", 0)
             _total     = _ocr_st.get("total", 1) or 1
@@ -443,13 +432,10 @@ if st.session_state.get("ocr_polling") and st.session_state.get("ocr_doc_id") ==
                     help="Stops processing after the current block. Already processed blocks are saved.",
                 ):
                     try:
-                        _cancel_resp = httpx.post(
-                            f"{BACKEND_URL}/processing/{doc_id}/ocr/cancel",
-                            timeout=5,
-                        )
-                        if _cancel_resp.status_code == 200:
+                        _cancel_resp = api("POST", f"/processing/{doc_id}/ocr/cancel", timeout=5)
+                        if _cancel_resp and _cancel_resp.status_code == 200:
                             st.warning("⏸ Cancellation sent, waiting for current block to finish...")
-                        else:
+                        elif _cancel_resp:
                             st.error(f"Cancel error: {_cancel_resp.status_code}")
                     except Exception as _ce:
                         st.error(str(_ce))
@@ -484,7 +470,7 @@ with col_left:
     if st.button("↩ Change document", use_container_width=True, key="btn_change_doc"):
         st.session_state.pop("viewer_doc_id", None)
         st.rerun()
-    docs = fetch_documents()
+    docs = fetch_documents(st.session_state.get("access_token", ""))
     for doc in docs:
         did    = doc["doc_id"]
         dname  = doc.get("filename", did)[:26]
@@ -630,7 +616,7 @@ with col_main:
 
     # ── Image ─────────────────────────────────────────────────────────────
     page_img, orig_w, orig_h, scale = fetch_page_image(
-        doc_id, st.session_state.viewer_page
+        doc_id, st.session_state.viewer_page, st.session_state.get("access_token", "")
     )
 
     if page_img:
@@ -701,31 +687,25 @@ with col_main:
                 with ab1:
                     if st.button("✅ Add block", use_container_width=True,
                                  type="primary", key="btn_canvas_add"):
-                        try:
-                            resp = httpx.post(
-                                f"{BACKEND_URL}/processing/{doc_id}/blocks",
-                                json={
-                                    "block_type": draw_type,
-                                    "page_num":   st.session_state.viewer_page,
-                                    "bbox":       [ox1, oy1, ox2, oy2],
-                                },
-                                timeout=10,
-                            )
-                            if resp.status_code == 200:
-                                new_id = resp.json().get("block_id")
-                                _stk = st.session_state.undo_stack
-                                _stk.append({"action": "add", "block_id": new_id})
-                                if len(_stk) > 10:
-                                    _stk.pop(0)
-                                fetch_blocks.clear()
-                                st.session_state.viewer_canvas_version += 1
-                                st.session_state.viewer_draw_mode      = False
-                                st.session_state.viewer_selected_block = new_id
-                                st.rerun()
-                            else:
-                                st.error(f"Error {resp.status_code}: {resp.text[:80]}")
-                        except Exception as e:
-                            st.error(str(e))
+                        resp = api("POST", f"/processing/{doc_id}/blocks",
+                                   json={
+                                       "block_type": draw_type,
+                                       "page_num":   st.session_state.viewer_page,
+                                       "bbox":       [ox1, oy1, ox2, oy2],
+                                   }, timeout=10)
+                        if resp and resp.status_code == 200:
+                            new_id = resp.json().get("block_id")
+                            _stk = st.session_state.undo_stack
+                            _stk.append({"action": "add", "block_id": new_id})
+                            if len(_stk) > 10:
+                                _stk.pop(0)
+                            fetch_blocks.clear()
+                            st.session_state.viewer_canvas_version += 1
+                            st.session_state.viewer_draw_mode      = False
+                            st.session_state.viewer_selected_block = new_id
+                            st.rerun()
+                        elif resp:
+                            st.error(f"Error {resp.status_code}: {resp.text[:80]}")
                 with ab2:
                     if st.button("🔄 Redraw", use_container_width=True, key="btn_redraw"):
                         st.session_state.viewer_canvas_version += 1
@@ -921,7 +901,7 @@ with col_right:
     st.markdown(f"Conf: `{conf:.2f}`")
 
     _preview_bust = st.session_state.get(f"preview_bust_{selected_id}", 0)
-    _preview_bytes = fetch_block_preview(doc_id, selected_id, _bust=_preview_bust)
+    _preview_bytes = fetch_block_preview(doc_id, selected_id, st.session_state.get("access_token", ""), _bust=_preview_bust)
     if _preview_bytes:
         st.image(_preview_bytes, use_container_width=True)
     else:
@@ -941,21 +921,15 @@ with col_right:
             _stk.append({"action": "patch", "block_id": selected_id, "snapshot": dict(block)})
             if len(_stk) > 10:
                 _stk.pop(0)
-            try:
-                _r = httpx.patch(
-                    f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
-                    json={"block_type": new_type},
-                    timeout=5,
-                )
-                if _r.status_code == 200:
-                    fetch_blocks.clear()
-                    st.rerun()
-                else:
-                    _stk.pop()
-                    st.error(f"Error: {_r.text[:60]}")
-            except Exception as _e:
+            _r = api("PATCH", f"/processing/{doc_id}/blocks/{selected_id}",
+                     json={"block_type": new_type}, timeout=5)
+            if _r and _r.status_code == 200:
+                fetch_blocks.clear()
+                st.rerun()
+            else:
                 _stk.pop()
-                st.error(str(_e))
+                if _r:
+                    st.error(f"Error: {_r.text[:60]}")
 
         st.divider()
 
@@ -998,27 +972,21 @@ with col_right:
                     _stk.append({"action": "patch", "block_id": selected_id, "snapshot": dict(block)})
                     if len(_stk) > 10:
                         _stk.pop(0)
-                    try:
-                        _r = httpx.patch(
-                            f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
-                            json={"bbox": _pending},
-                            timeout=10,
-                        )
-                        if _r.status_code == 200:
-                            st.session_state[f"preview_bust_{selected_id}"] = int(time.time())
-                            fetch_block_preview.clear()
-                            fetch_blocks.clear()
-                            st.session_state.pop("pending_bbox", None)
-                            st.session_state.pop("pending_bbox_for", None)
-                            st.session_state.viewer_mode           = None
-                            st.session_state.viewer_canvas_version += 1
-                            st.rerun()
-                        else:
-                            _stk.pop()
-                            st.error(f"Error: {_r.text[:60]}")
-                    except Exception as _e:
+                    _r = api("PATCH", f"/processing/{doc_id}/blocks/{selected_id}",
+                             json={"bbox": _pending}, timeout=10)
+                    if _r and _r.status_code == 200:
+                        st.session_state[f"preview_bust_{selected_id}"] = int(time.time())
+                        fetch_block_preview.clear()
+                        fetch_blocks.clear()
+                        st.session_state.pop("pending_bbox", None)
+                        st.session_state.pop("pending_bbox_for", None)
+                        st.session_state.viewer_mode           = None
+                        st.session_state.viewer_canvas_version += 1
+                        st.rerun()
+                    else:
                         _stk.pop()
-                        st.error(str(_e))
+                        if _r:
+                            st.error(f"Error: {_r.text[:60]}")
             with _sc2:
                 if st.button(
                     "✕ Cancel",
@@ -1045,12 +1013,7 @@ with col_right:
                 _stk.append({"action": "delete", "block_id": selected_id, "snapshot": dict(block)})
                 if len(_stk) > 10:
                     _stk.pop(0)
-                try:
-                    httpx.delete(
-                        f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}", timeout=5
-                    )
-                except Exception:
-                    pass
+                api("DELETE", f"/processing/{doc_id}/blocks/{selected_id}", timeout=5)
                 st.session_state.viewer_selected_block  = None
                 st.session_state.viewer_confirm_delete  = False
                 fetch_blocks.clear()
@@ -1115,20 +1078,15 @@ with col_right:
         )
         if st.button("💾 Save text", use_container_width=True,
                      type="primary", key="save_text"):
-            try:
-                resp = httpx.patch(
-                    f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
-                    json={"output": new_output, "status": "accepted"}, timeout=5,
-                )
-                if resp.status_code == 200:
-                    fetch_blocks.clear()
-                    st.session_state.viewer_edit_mode = False
-                    st.success("✅ Saved")
-                    st.rerun()
-                else:
-                    st.error("Error")
-            except Exception as e:
-                st.error(str(e))
+            resp = api("PATCH", f"/processing/{doc_id}/blocks/{selected_id}",
+                       json={"output": new_output, "status": "accepted"}, timeout=5)
+            if resp and resp.status_code == 200:
+                fetch_blocks.clear()
+                st.session_state.viewer_edit_mode = False
+                st.success("✅ Saved")
+                st.rerun()
+            elif resp:
+                st.error(f"Error: {resp.status_code}")
 
     st.markdown("---")
     st.markdown("**Actions:**")
@@ -1136,8 +1094,8 @@ with col_right:
     with a1:
         if st.button("✅ Accept", use_container_width=True, key="btn_accept",
                      help="Mark block as reviewed (no changes)"):
-            httpx.patch(f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
-                        json={"status": "accepted"}, timeout=5)
+            api("PATCH", f"/processing/{doc_id}/blocks/{selected_id}",
+                json={"status": "accepted"}, timeout=5)
             fetch_blocks.clear()
             st.rerun()
         if st.button("✏️ Edit", use_container_width=True, key="btn_edit",
@@ -1146,8 +1104,8 @@ with col_right:
     with a2:
         if st.button("🔖 Flag review", use_container_width=True, key="btn_review",
                      help="Mark as needing review"):
-            httpx.patch(f"{BACKEND_URL}/processing/{doc_id}/blocks/{selected_id}",
-                        json={"status": "needs_review"}, timeout=5)
+            api("PATCH", f"/processing/{doc_id}/blocks/{selected_id}",
+                json={"status": "needs_review"}, timeout=5)
             fetch_blocks.clear()
             st.rerun()
         if st.button("⏭ Next block", use_container_width=True, key="btn_next"):
@@ -1173,36 +1131,30 @@ with col_right:
             )
             if st.button("📚 Add to training", use_container_width=True,
                          type="primary", key="btn_to_train"):
-                try:
-                    edit_key = f"edit_output_{selected_id}"
-                    edited_text = st.session_state.get(edit_key, cur)
-                    train_orig   = orig if orig != cur else output
-                    train_target = edited_text if edited_text != train_orig else cur
+                edit_key = f"edit_output_{selected_id}"
+                edited_text = st.session_state.get(edit_key, cur)
+                train_orig   = orig if orig != cur else output
+                train_target = edited_text if edited_text != train_orig else cur
 
-                    resp = httpx.post(
-                        f"{BACKEND_URL}/training/pairs",
-                        json={
-                            "block_id":           selected_id,
-                            "doc_id":             doc_id,
-                            "block_type":         btype,
-                            "source_page":        block.get("page_num"),
-                            "bbox":               block.get("bbox"),
-                            "image_path":         block.get("image_path"),
-                            "local_model_output": train_orig,
-                            "target_output":      train_target,
-                        },
-                        timeout=10,
+                resp = api("POST", "/training/pairs",
+                           json={
+                               "block_id":           selected_id,
+                               "doc_id":             doc_id,
+                               "block_type":         btype,
+                               "source_page":        block.get("page_num"),
+                               "bbox":               block.get("bbox"),
+                               "image_path":         block.get("image_path"),
+                               "local_model_output": train_orig,
+                               "target_output":      train_target,
+                           }, timeout=10)
+                if resp and resp.status_code == 200:
+                    data = resp.json()
+                    st.success(
+                        f"✅ Pair #{data.get('pair_id','?')[:16]} saved. "
+                        f"Total: {data.get('total_pairs', '?')} pairs"
                     )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        st.success(
-                            f"✅ Pair #{data.get('pair_id','?')[:16]} saved. "
-                            f"Total: {data.get('total_pairs', '?')} pairs"
-                        )
-                    else:
-                        st.error(f"Error: {resp.json().get('detail', resp.text[:80])}")
-                except Exception as e:
-                    st.error(str(e))
+                elif resp:
+                    st.error(f"Error: {resp.json().get('detail', resp.text[:80])}")
 
     st.markdown("---")
     st.markdown("---")
@@ -1211,7 +1163,7 @@ with col_right:
     _sel_btype = next((b.get("block_type") for b in all_blocks if b.get("block_id") == selected_id), None)
     _block_model_id = st.session_state.get("viewer_model_choices", {}).get(_sel_btype)
     if _sel_btype:
-        _avail = fetch_available_models()
+        _avail = fetch_available_models(st.session_state.get("access_token", ""))
         _models = _avail.get(_sel_btype, {}).get("models", [])
         if _models:
             _opts = [m["id"] for m in _models]
@@ -1233,36 +1185,24 @@ with col_right:
     with oc1:
         if st.button("▶ This block", use_container_width=True, key="btn_ocr_block",
                      help="Run OCR for the selected block only"):
-            try:
-                resp = httpx.post(
-                    f"{BACKEND_URL}/processing/{doc_id}/ocr-block/{selected_id}",
-                    json={"model_id": _block_model_id} if _block_model_id else {},
-                    timeout=60,
-                )
-                if resp.status_code == 200:
-                    fetch_blocks.clear()
-                    st.success("✅ OCR done")
-                    st.rerun()
-                else:
-                    st.error(f"{resp.status_code}: {resp.text[:60]}")
-            except Exception as e:
-                st.error(str(e))
+            resp = api("POST", f"/processing/{doc_id}/ocr-block/{selected_id}",
+                       json={"model_id": _block_model_id} if _block_model_id else {}, timeout=60)
+            if resp and resp.status_code == 200:
+                fetch_blocks.clear()
+                st.success("✅ OCR done")
+                st.rerun()
+            elif resp:
+                st.error(f"{resp.status_code}: {resp.text[:60]}")
     with oc2:
         if st.button("▶ Full doc", use_container_width=True, key="btn_ocr_all",
                      help="Run OCR for entire document in background"):
-            try:
-                _choices = st.session_state.get("viewer_model_choices", {})
-                resp = httpx.post(
-                    f"{BACKEND_URL}/processing/{doc_id}/ocr",
-                    json={"model_choices": _choices},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    st.success("⏳ OCR started in background")
-                else:
-                    st.error(f"{resp.status_code}")
-            except Exception as e:
-                st.error(str(e))
+            _choices = st.session_state.get("viewer_model_choices", {})
+            resp = api("POST", f"/processing/{doc_id}/ocr",
+                       json={"model_choices": _choices}, timeout=10)
+            if resp and resp.status_code == 200:
+                st.success("⏳ OCR started in background")
+            elif resp:
+                st.error(f"{resp.status_code}")
 
     st.markdown("**📤 Export**")
     _has_ocr2 = any(

@@ -7,6 +7,20 @@ import streamlit as st
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 PUBLIC_BACKEND_URL = os.getenv("PUBLIC_BACKEND_URL", "http://localhost:8000")
 
+
+def api(method: str, path: str, **kw):
+    """Authenticated httpx request; returns raw Response or None on error."""
+    try:
+        headers = kw.pop("headers", {})
+        token = st.session_state.get("access_token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        kw.setdefault("timeout", 60)
+        return httpx.request(method, f"{BACKEND_URL}{path}", headers=headers, **kw)
+    except Exception as e:
+        st.error(f"API error ({path}): {e}")
+        return None
+
 st.set_page_config(
     page_title="Markdown Viewer — PRMS",
     page_icon="📄",
@@ -21,19 +35,22 @@ render_sidebar_user()
 # ─── Data fetchers ────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=15)
-def fetch_documents():
+def fetch_documents(token: str = ""):
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        r = httpx.get(f"{BACKEND_URL}/documents/", timeout=5)
+        r = httpx.get(f"{BACKEND_URL}/documents/", headers=headers, timeout=5)
         return r.json().get("documents", [])
     except Exception:
         return []
 
 
 @st.cache_data(ttl=5)
-def fetch_markdown(doc_id: str) -> str | None:
+def fetch_markdown(doc_id: str, token: str = "") -> str | None:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         r = httpx.get(
             f"{BACKEND_URL}/processing/{doc_id}/export-file/markdown",
+            headers=headers,
             timeout=15,
         )
         if r.status_code == 200:
@@ -44,33 +61,21 @@ def fetch_markdown(doc_id: str) -> str | None:
 
 
 def save_markdown(doc_id: str, content: str) -> bool:
-    try:
-        r = httpx.patch(
-            f"{BACKEND_URL}/processing/{doc_id}/export-file/markdown",
-            json={"content": content},
-            timeout=15,
-        )
-        return r.status_code == 200
-    except Exception:
-        return False
+    r = api("PATCH", f"/processing/{doc_id}/export-file/markdown",
+            json={"content": content}, timeout=15)
+    return r is not None and r.status_code == 200
 
 
 def generate_export(doc_id: str) -> bool:
-    try:
-        r = httpx.post(
-            f"{BACKEND_URL}/processing/{doc_id}/export?format=markdown",
-            timeout=60,
-        )
-        return r.status_code == 200
-    except Exception:
-        return False
+    r = api("POST", f"/processing/{doc_id}/export?format=markdown", timeout=60)
+    return r is not None and r.status_code == 200
 
 
 # ─── Document selector ────────────────────────────────────────────────────────
 
 st.title("📄 Markdown Viewer")
 
-docs = fetch_documents()
+docs = fetch_documents(st.session_state.get("access_token", ""))
 ready_docs = [d for d in docs if d.get("status") in ("ocr_done", "ocrdone", "done")]
 
 if not ready_docs:
@@ -101,14 +106,15 @@ st.divider()
 
 # ─── Load or generate markdown ────────────────────────────────────────────────
 
-md_content = fetch_markdown(selected_doc_id)
+_token = st.session_state.get("access_token", "")
+md_content = fetch_markdown(selected_doc_id, _token)
 
 if md_content is None:
     with st.spinner("Generating export.md..."):
         ok = generate_export(selected_doc_id)
         if ok:
             fetch_markdown.clear()
-            md_content = fetch_markdown(selected_doc_id)
+            md_content = fetch_markdown(selected_doc_id, _token)
         else:
             st.error("Failed to generate markdown. Check OCR status.")
             st.stop()
@@ -182,14 +188,8 @@ with col_dl:
 with col_zip:
     _zip_key = f"zip_bytes_{selected_doc_id}"
     if _zip_key not in st.session_state:
-        try:
-            r = httpx.get(
-                f"{BACKEND_URL}/processing/{selected_doc_id}/export-zip",
-                timeout=30,
-            )
-            st.session_state[_zip_key] = r.content if r.status_code == 200 else None
-        except Exception:
-            st.session_state[_zip_key] = None
+        r = api("GET", f"/processing/{selected_doc_id}/export-zip", timeout=30)
+        st.session_state[_zip_key] = r.content if r and r.status_code == 200 else None
     _zip_bytes = st.session_state.get(_zip_key)
     if _zip_bytes:
         st.download_button(
@@ -209,11 +209,13 @@ _IMG_RE = re.compile(r'!\[([^\]]*)\]\(\./blocks/([^)]+)\)')
 
 
 @st.cache_data(ttl=300)
-def _fetch_image_b64(doc_id: str, filename: str) -> str | None:
+def _fetch_image_b64(doc_id: str, filename: str, token: str = "") -> str | None:
     import base64
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         r = httpx.get(
             f"{BACKEND_URL}/processing/{doc_id}/media/{filename}",
+            headers=headers,
             timeout=10,
         )
         if r.status_code == 200:
@@ -224,10 +226,12 @@ def _fetch_image_b64(doc_id: str, filename: str) -> str | None:
 
 
 def resolve_media_urls(content: str, doc_id: str) -> str:
+    token = st.session_state.get("access_token", "")
+
     def _replace(m: re.Match) -> str:
         alt = m.group(1).replace('"', "'")
         filename = m.group(2)
-        b64 = _fetch_image_b64(doc_id, filename)
+        b64 = _fetch_image_b64(doc_id, filename, token)
         if b64:
             return f'<img src="data:image/png;base64,{b64}" alt="{alt}" style="max-width:100%;height:auto;" />'
         return f"_{alt if alt else 'Figure'}_"
