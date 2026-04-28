@@ -1,0 +1,9 @@
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+
+[browser]
+serverAddress = "pdf2md.tech"
+serverPort = 443
+gatherUsageStats = false

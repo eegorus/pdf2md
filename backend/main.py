@@ -254,9 +254,9 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://pdf2md.tech",
+        "https://www.pdf2md.tech",
         "http://localhost:8501",
-        "http://frontend:8501",
-        "http://localhost:3000",   # на случай dev-сервера
     ],
     allow_credentials=True,
     allow_methods=["*"],

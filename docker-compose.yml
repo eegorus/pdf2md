@@ -90,13 +90,29 @@ services:
   # Тяжёлый контейнер: грузит DocLayout-YOLO, PaddleOCR, TexTeller
   # start_period: 120s — модели грузятся при старте
   # ============================================================
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: prms-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/logs:/var/log/nginx
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - prms-network
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: prms-backend
-    ports:
-      - "8000:8000"
     volumes:
       - ./backend:/app            # hot-reload кода без rebuild
       - ./data:/app/data          # Данные пользователей
@@ -156,8 +172,6 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: prms-frontend
-    ports:
-      - "8501:8501"
     volumes:
       - ./frontend:/app    # hot-reload кода без rebuild
       - ./data:/app/data   # Нужен для отображения результатов и картинок
