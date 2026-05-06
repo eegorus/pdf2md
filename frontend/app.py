@@ -5,7 +5,7 @@ import os
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
 st.set_page_config(
-    page_title="PRMS Table Extractor",
+    page_title="pdf2md",
     page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -20,8 +20,11 @@ if "current_doc_name" not in st.session_state:
 if not st.session_state.get("access_token"):
     st.switch_page("pages/0Auth.py")
 
+from utils.styles import inject_global_styles
+inject_global_styles()
+
 # ─── HOME PAGE ────────────────────────────────────────────────────────────────
-st.title("📄 PRMS Table Extractor")
+st.title("📄 pdf2md")
 st.markdown("""
 Table, text, formula and figure extraction from PDF reports.
 
@@ -109,7 +112,7 @@ if st.session_state.current_doc_id:
 
 # ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## 📄 PRMS Extractor")
+    st.markdown("## 📄 pdf2md")
     st.markdown("---")
     if health:
         status = health.get("status", "unknown")
@@ -123,4 +126,4 @@ with st.sidebar:
     else:
         st.markdown("🔴 Backend unavailable")
     st.markdown("---")
-    st.caption("v1.1.0 · PRMS Table Extractor")
+    st.caption("v1.1.0 · pdf2md")

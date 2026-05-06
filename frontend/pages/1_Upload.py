@@ -5,11 +5,14 @@ import time
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
-st.set_page_config(page_title="Upload — PRMS", layout="wide")
+st.set_page_config(page_title="pdf2md", page_icon="📄", layout="wide")
 
 from utils.auth import ensure_authenticated
 if not ensure_authenticated():
     st.stop()
+
+from utils.styles import inject_global_styles
+inject_global_styles()
 
 from components.auth_guard import require_auth, render_sidebar_user
 current_user = require_auth()
@@ -192,7 +195,7 @@ elif st.session_state.upload_stage == "mode":
             "<b style='font-size:1.1em'>Detailed mode</b><br/><br/>"
             "Page-by-page block layout with manual<br/>"
             "review and OCR selection per block type.<br/><br/>"
-            "<i style='color:#94a3b8'>Good for: PRMS reports,<br/>"
+            "<i style='color:#94a3b8'>Good for: pdf2md reports,<br/>"
             "complex tables and formulas</i>"
             "</div>",
             unsafe_allow_html=True,

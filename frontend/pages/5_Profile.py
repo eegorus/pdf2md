@@ -4,11 +4,14 @@ import os
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
-st.set_page_config(page_title="Profile — PRMS", page_icon="👤", layout="wide")
+st.set_page_config(page_title="pdf2md", page_icon="📄", layout="wide")
 
 from utils.auth import ensure_authenticated
 if not ensure_authenticated():
     st.stop()
+
+from utils.styles import inject_global_styles
+inject_global_styles()
 
 from components.auth_guard import require_auth, render_sidebar_user
 

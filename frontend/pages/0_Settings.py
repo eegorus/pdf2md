@@ -4,11 +4,14 @@ import streamlit as st
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
-st.set_page_config(page_title="Settings — PRMS", layout="centered")
+st.set_page_config(page_title="pdf2md", page_icon="📄", layout="centered")
 
 from utils.auth import ensure_authenticated
 if not ensure_authenticated():
     st.stop()
+
+from utils.styles import inject_global_styles
+inject_global_styles()
 
 PROVIDER_META = {
     "openrouter": {

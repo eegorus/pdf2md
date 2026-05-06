@@ -4,10 +4,13 @@ import os
 import time
 
 st.set_page_config(
-    page_title="PRMS — Login",
-    page_icon="🔑",
+    page_title="pdf2md",
+    page_icon="📄",
     layout="centered"
 )
+
+from utils.styles import inject_global_styles
+inject_global_styles()
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
@@ -17,7 +20,7 @@ if st.session_state.get("access_token"):
 if msg := st.session_state.pop("auth_message", None):
     st.info(msg)
 
-st.title("🔑 PRMS — Sign In")
+st.title("🔑 pdf2md — Sign In")
 st.caption("PDF Recognition & Markdown System")
 st.divider()
 

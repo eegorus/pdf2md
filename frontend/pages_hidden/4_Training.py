@@ -6,7 +6,7 @@ import time
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
 st.set_page_config(
-    page_title="Training — PRMS",
+    page_title="pdf2md",
     layout="wide",
     initial_sidebar_state="expanded",
 )

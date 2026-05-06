@@ -27,7 +27,8 @@ def api(method: str, path: str, **kw):
 
 
 st.set_page_config(
-    page_title="Viewer — PRMS",
+    page_title="pdf2md",
+    page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -35,6 +36,9 @@ st.set_page_config(
 from utils.auth import ensure_authenticated
 if not ensure_authenticated():
     st.stop()
+
+from utils.styles import inject_global_styles
+inject_global_styles()
 
 from components.auth_guard import require_auth, render_sidebar_user
 current_user = require_auth()
