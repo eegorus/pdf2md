@@ -6,6 +6,10 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
 st.set_page_config(page_title="Settings — PRMS", layout="centered")
 
+from utils.auth import ensure_authenticated
+if not ensure_authenticated():
+    st.stop()
+
 PROVIDER_META = {
     "openrouter": {
         "label":       "OpenRouter",

@@ -1,6 +1,7 @@
 import streamlit as st
 import httpx
 import os
+import time
 
 st.set_page_config(
     page_title="PRMS — Login",
@@ -12,6 +13,9 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
 if st.session_state.get("access_token"):
     st.switch_page("pages/1_Upload.py")
+
+if msg := st.session_state.pop("auth_message", None):
+    st.info(msg)
 
 st.title("🔑 PRMS — Sign In")
 st.caption("PDF Recognition & Markdown System")
@@ -41,6 +45,8 @@ with tab_login:
                         data = resp.json()
                         st.session_state["access_token"] = data["access_token"]
                         st.session_state["refresh_token"] = data["refresh_token"]
+                        st.session_state["access_token_exp"] = time.time() + data.get("expires_in", 1800)
+                        st.session_state["last_activity_ts"] = time.time()
 
                         profile_resp = httpx.get(
                             f"{BACKEND_URL}/users/me",

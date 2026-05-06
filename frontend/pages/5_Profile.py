@@ -6,6 +6,10 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
 st.set_page_config(page_title="Profile — PRMS", page_icon="👤", layout="wide")
 
+from utils.auth import ensure_authenticated
+if not ensure_authenticated():
+    st.stop()
+
 from components.auth_guard import require_auth, render_sidebar_user
 
 require_auth()

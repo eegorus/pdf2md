@@ -32,6 +32,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+from utils.auth import ensure_authenticated
+if not ensure_authenticated():
+    st.stop()
+
 from components.auth_guard import require_auth, render_sidebar_user
 current_user = require_auth()
 render_sidebar_user()
