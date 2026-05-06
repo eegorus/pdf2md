@@ -22,6 +22,12 @@ button[kind="primary"]:hover {
     border-color:     var(--brand-secondary) !important;
 }
 
+/* Hide auth page from sidebar navigation */
+[data-testid="stSidebarNav"] a[href$="/Auth"],
+[data-testid="stSidebarNav"] li:has(a[href$="/Auth"]) {
+    display: none !important;
+}
+
 /* Explicit danger class — use sparingly: st.markdown('<span class="danger">…</span>', unsafe_allow_html=True) */
 .brand-danger  { color: var(--brand-danger);  }
 .brand-success { color: var(--brand-success); }
