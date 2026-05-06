@@ -61,7 +61,7 @@ with col_logout:
         except Exception:
             pass
         st.session_state.clear()
-        st.switch_page("pages/0Auth.py")
+        st.switch_page("pages/0_Auth.py")
 
 st.divider()
 
@@ -138,4 +138,4 @@ with tab_storage:
         st.error(f"Connection error: {e}")
 
     if st.button("📂 Go to documents"):
-        st.switch_page("pages/1_Upload.py")
+        st.switch_page("pages/2_Upload.py")

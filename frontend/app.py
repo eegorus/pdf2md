@@ -18,7 +18,7 @@ if "current_doc_name" not in st.session_state:
     st.session_state.current_doc_name = None
 
 if not st.session_state.get("access_token"):
-    st.switch_page("pages/0Auth.py")
+    st.switch_page("pages/0_Auth.py")
 
 from utils.styles import inject_global_styles
 inject_global_styles()

@@ -166,7 +166,7 @@ def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
 
     if st.button("📄 Open in MD Viewer", use_container_width=True, key=f"{key_prefix}_go_md"):
         st.session_state["md_viewer_doc_id"] = doc_id
-        st.switch_page("pages/4_MarkdownViewer.py")
+        st.switch_page("pages/5_Viewer.py")
 
 
 def draw_blocks_on_image(

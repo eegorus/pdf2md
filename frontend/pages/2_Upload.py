@@ -212,7 +212,7 @@ elif st.session_state.upload_stage == "mode":
                     )
                     if resp.status_code == 400 and "layout_already_done" in resp.text:
                         st.session_state["viewer_doc_id"] = doc_id
-                        st.switch_page("pages/2_Viewer.py")
+                        st.switch_page("pages/1_My_Documents.py")
                     elif resp.status_code == 200:
                         st.session_state.upload_stage = "detail_layout"
                         st.rerun()
@@ -361,7 +361,7 @@ elif st.session_state.upload_stage == "quick_done":
     with col_md:
         if st.button("📄 Open in Markdown Viewer", type="primary", use_container_width=True):
             st.session_state["md_viewer_doc_id"] = doc_id
-            st.switch_page("pages/4_MarkdownViewer.py")
+            st.switch_page("pages/5_Viewer.py")
     with col_new:
         if st.button("📄 New document", use_container_width=True):
             for k in ["upload_doc_id", "upload_doc_name"]:
@@ -409,7 +409,7 @@ elif st.session_state.upload_stage == "detail_layout":
             st.success("✅ Block layout ready! Open Viewer to review.")
             if st.button("→ Open Viewer", type="primary", use_container_width=True):
                 st.session_state["viewer_doc_id"] = doc_id
-                st.switch_page("pages/2_Viewer.py")
+                st.switch_page("pages/1_My_Documents.py")
             break
         elif status == "error":
             st.error(f"❌ Layout detection error: {s.get('error', '')}")

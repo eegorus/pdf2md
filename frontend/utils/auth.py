@@ -29,7 +29,7 @@ def ensure_authenticated() -> bool:
     Returns True if session is valid; switches to login page otherwise.
     """
     if not st.session_state.get("access_token"):
-        st.switch_page("pages/0Auth.py")
+        st.switch_page("pages/0_Auth.py")
         return False
 
     now = time.time()
@@ -39,7 +39,7 @@ def ensure_authenticated() -> bool:
         for k in ("access_token", "refresh_token", "current_user", "access_token_exp", "last_activity_ts"):
             st.session_state.pop(k, None)
         st.session_state["auth_message"] = "You were signed out due to inactivity."
-        st.switch_page("pages/0Auth.py")
+        st.switch_page("pages/0_Auth.py")
         return False
 
     exp = st.session_state.get("access_token_exp") or _jwt_exp(st.session_state["access_token"])
@@ -61,7 +61,7 @@ def ensure_authenticated() -> bool:
                     for k in ("access_token", "refresh_token", "current_user", "access_token_exp", "last_activity_ts"):
                         st.session_state.pop(k, None)
                     st.session_state["auth_message"] = "Your session has expired. Please sign in again."
-                    st.switch_page("pages/0Auth.py")
+                    st.switch_page("pages/0_Auth.py")
                     return False
             except Exception:
                 pass  # network error — keep session, will retry on next request

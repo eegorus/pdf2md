@@ -12,10 +12,17 @@ st.set_page_config(
 from utils.styles import inject_global_styles
 inject_global_styles()
 
+st.markdown("""
+<style>
+[data-testid="stSidebar"] { display: none !important; }
+[data-testid="stSidebarCollapsedControl"] { display: none !important; }
+</style>
+""", unsafe_allow_html=True)
+
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
 if st.session_state.get("access_token"):
-    st.switch_page("pages/1_Upload.py")
+    st.switch_page("pages/2_Upload.py")
 
 if msg := st.session_state.pop("auth_message", None):
     st.info(msg)
@@ -60,7 +67,7 @@ with tab_login:
                             st.session_state["current_user"] = profile_resp.json()
 
                         st.success("Welcome!")
-                        st.switch_page("pages/1_Upload.py")
+                        st.switch_page("pages/2_Upload.py")
                     elif resp.status_code == 401:
                         st.error("Invalid email or password")
                     elif resp.status_code == 429:

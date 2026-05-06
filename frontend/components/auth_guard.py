@@ -8,7 +8,7 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 def require_auth() -> dict:
     if not st.session_state.get("access_token"):
         st.warning("⚠️ Authentication required. Please sign in.")
-        st.page_link("pages/0Auth.py", label="👉 Go to login page", icon="🔑")
+        st.page_link("pages/0_Auth.py", label="👉 Go to login page", icon="🔑")
         st.stop()
     return st.session_state.get("current_user", {})
 
@@ -74,7 +74,7 @@ def _handle_unauthorized():
     for key in ["access_token", "refresh_token", "current_user"]:
         st.session_state.pop(key, None)
     st.warning("Session expired. Please sign in again.")
-    st.page_link("pages/0Auth.py", label="👉 Sign in", icon="🔑")
+    st.page_link("pages/0_Auth.py", label="👉 Sign in", icon="🔑")
     st.stop()
 
 
