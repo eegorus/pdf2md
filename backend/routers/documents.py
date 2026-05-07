@@ -161,7 +161,8 @@ async def list_documents(
         meta_path = DATA_DIR / "uploads" / db_doc.docid / "meta.json"
         if meta_path.exists():
             meta = json.loads(meta_path.read_text())
-            meta["filename"] = db_doc.filename  # обновить filename из БД
+            meta["filename"] = db_doc.filename
+            meta["created_at"] = db_doc.created_at.isoformat() if db_doc.created_at else None
             docs_result.append(meta)
     return {"documents": docs_result, "total": len(docs_result)}
 

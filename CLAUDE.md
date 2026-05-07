@@ -52,20 +52,32 @@ UI: `http://localhost:8501` | Manual testing only (no test suite)
 - `database/crud/*.py` — CRUD for users, documents, api_keys
 
 **Key frontend files:**
-- `pages/0Auth.py` — login/register tabs, token storage (2026-04-21)
-- `components/auth_guard.py` — `require_auth()`, `render_sidebar_user()`, auth helpers (2026-04-21)
-- `pages/1_Upload.py` — PDF upload, quick vs detail layout, uses `/users/me/api-keys`
-- `pages/2_Viewer.py` — canvas, draw/edit blocks, undo (1000+ LOC)
-- `pages/4_MarkdownViewer.py` — edit markdown, LaTeX toolbar, find & replace
+- `pages/0_Auth.py` — login/register, auto-login after register, smart redirect (docs→1_My_Documents / no docs→2_Upload)
+- `pages/1_My_Documents.py` — document library picker + canvas block editor (1000+ LOC); picker: search/sort/cards/delete/download
+- `pages/2_Upload.py` — PDF upload, quick vs detail layout, uses `/users/me/api-keys`
+- `pages/3_Settings.py` — API keys per provider
+- `pages/4_Profile.py` — profile, password change
+- `pages/5_Viewer.py` — edit markdown, LaTeX toolbar, find & replace
+- `components/auth_guard.py` — `require_auth()`, `render_sidebar_user()`, auth helpers
+- `utils/auth.py` — `ensure_authenticated()`: token refresh (5 min before expiry), inactivity logout (4 h), redirect to 0_Auth
+- `utils/styles.py` — `inject_global_styles()`: CSS vars + primary button brand color (#7C3AED)
 
 **Frontend API pattern:**
 - Each page defines a local `api(method, path, **kw)` that reads `st.session_state["access_token"]` and injects `Authorization: Bearer` header; returns raw `httpx.Response` or `None`
 - `@st.cache_data` helpers accept `token: str = ""` as explicit param (so cache key includes the token); call them with `st.session_state.get("access_token", "")`
 - Never use bare `httpx.*` calls outside of cache helpers
+- Page boot order: `set_page_config` → `ensure_authenticated()` → `inject_global_styles()` → page logic
+
+**Session state keys (auth):** `access_token`, `refresh_token`, `access_token_exp` (Unix ts), `last_activity_ts`, `current_user`, `user_display_name`, `auth_message` (shown on 0_Auth after redirect)
 
 **Viewer session state:** `viewer_doc_id`, `viewer_page`, `viewer_selected_block`, `viewer_draw_mode`, `viewer_mode` ("edit" or None), `viewer_canvas_version`, `undo_stack` (max 10)
 
 **Canvas modes:** View (click to select) | Draw (st_canvas rect) | Edit (st_canvas transform)
+
+**Markdown export (two steps, must follow order):**
+1. `POST /processing/{doc_id}/export?format=markdown` — generates `export.md`
+2. `GET /processing/{doc_id}/export-file/markdown` — downloads the file
+(or `GET /processing/{doc_id}/export-zip` for ZIP with images)
 
 **Notes:**
 - `backend/shared/` is canonical; `shared/` is a mirror — keep in sync
@@ -89,25 +101,28 @@ JWT_SECRET_KEY=<64-char hex>
 FERNET_KEY=<base64 32-byte key>
 ```
 
-## Current Status (2026-04-22)
+## Current Status (2026-05-07)
 
-**Last completed (2026-04-22):**
-- ✅ Auth token injected in all API calls in `2_Viewer.py` and `4_MarkdownViewer.py` — fixed 401 errors on page images, blocks, block previews
-- ✅ Local `api(method, path, **kw)` helper pattern established in all frontend pages
+**Last completed (2026-05-07):**
+- ✅ My Documents picker: search/sort/cards with relative timestamps, ···popover (re-parse, download .md, delete)
+- ✅ `GET /documents/` now returns `created_at` from DB record
+- ✅ Download .md fixed: correct two-step POST→GET flow (same as Viewer)
 
-**Last completed (2026-04-21):**
-- ✅ `/users/me` router — profile, password, per-user encrypted API keys
-- ✅ Removed legacy `/settings/keys/raw` (security hole — plaintext keys in JSON)
-- ✅ Frontend: login/register page (`0Auth.py`)
-- ✅ Auth guard on all protected pages (1_Upload, 2_Viewer, 4_MarkdownViewer)
-- ✅ Sidebar user block with logout
+**Last completed (2026-05-06):**
+- ✅ Auth page redesigned: "pdf2md — Sign in", auto-login after register, smart redirect (has docs → My Documents, no docs → Upload)
+- ✅ Navigation restructured: pages renamed 0_Auth / 1_My_Documents / 2_Upload / 3_Settings / 4_Profile / 5_Viewer
+- ✅ Auth page hidden from sidebar (CSS `display:none` on `href$="/Auth"` nav link + full sidebar hidden on auth page itself)
+- ✅ `utils/auth.py` — `ensure_authenticated()`: proactive token refresh 5 min before expiry, 4 h inactivity logout
+- ✅ `utils/styles.py` — `inject_global_styles()`: CSS vars + primary button #7C3AED, called on all pages
+- ✅ Rebrand PRMS → pdf2md across all frontend files
 
 **Features:**
 - ✅ Multi-user with JWT tokens (30 min access, 14 day refresh)
 - ✅ Document ownership checks (admin bypass)
 - ✅ API key encryption (Fernet) — per-user in DB, with settings.json fallback
-- ✅ Frontend auth flow: register → login → token storage → app access
-- ✅ Bearer token injected in all API calls across all pages
+- ✅ Silent token refresh (proactive, no page reload)
+- ✅ Inactivity logout after 4 hours
+- ✅ Smart post-login redirect: existing docs → My Documents, new user → Upload
 - ✅ Polling OCR with cancel support
 - ✅ Block undo/redo (max 10)
 - ✅ Draw/edit blocks via canvas
@@ -116,13 +131,9 @@ FERNET_KEY=<base64 32-byte key>
 - ✅ 8 parsers (4 local + 4 cloud)
 - ✅ Auto-fix OCR: superscripts, subscripts, currency
 
-**Known issues:**
-- `0Auth.py` and `0_Settings.py` both start with `0` (alphabetically `0Auth` first)
-
 **Next priorities:**
 1. Test full auth cycle: register → login → upload → OCR → export via UI
-2. Token refresh on 401 (currently just logs out)
-3. Deploy with ~20GB models on RTX 4090
+2. Deploy with ~20GB models on RTX 4090
 
 ## Compact Instructions
 

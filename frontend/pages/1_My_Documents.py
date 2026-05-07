@@ -3,6 +3,7 @@ import streamlit.components.v1 as components
 import httpx
 import os
 import time
+from datetime import datetime, timezone
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_drawable_canvas import st_canvas
@@ -169,6 +170,36 @@ def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
         st.switch_page("pages/5_Viewer.py")
 
 
+def _relative_time(iso_str: str | None) -> str:
+    if not iso_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        s = (datetime.now(timezone.utc) - dt).total_seconds()
+        if s < 60:       return "just now"
+        if s < 3600:     return f"{int(s/60)}m ago"
+        if s < 86400:    return f"{int(s/3600)}h ago"
+        if s < 172800:   return "Yesterday"
+        if s < 2592000:  return f"{int(s/86400)}d ago"
+        return dt.strftime("%b %d, %Y")
+    except Exception:
+        return "—"
+
+
+def _status_badge(status: str | None) -> str:
+    return {
+        "done":       "✅ Done",
+        "processing": "⏳ Processing",
+        "splitting":  "⏳ Splitting",
+        "error":      "❌ Error",
+        "failed":     "❌ Failed",
+        "pending":    "🕐 Pending",
+        "uploaded":   "🕐 Uploaded",
+        "layout_done": "🗂 Layout done",
+        "ocr_done":   "✅ OCR done",
+    }.get(status or "", f"⚪ {status or 'unknown'}")
+
+
 def draw_blocks_on_image(
     image: Image.Image,
     blocks: list,
@@ -234,44 +265,119 @@ st.title("🔍 Document Viewer")
 
 doc_id = st.session_state.get("viewer_doc_id") or st.session_state.get("viewer_doc_id")
 if not doc_id:
-    st.markdown("### 📁 Select document")
+    # ── Search + sort ──────────────────────────────────────────────────────────
+    _cs, _cs2, _cu = st.columns([4, 2, 1])
+    _search = _cs.text_input(
+        "search", label_visibility="collapsed",
+        placeholder="🔍 Search by filename…", key="doc_search",
+    )
+    _sort = _cs2.selectbox(
+        "sort",
+        ["Date ↓ (newest first)", "Date ↑ (oldest first)", "Name A→Z"],
+        label_visibility="collapsed", key="doc_sort",
+    )
+    if _cu.button("⬆ Upload", type="primary", use_container_width=True, key="picker_upload"):
+        st.switch_page("pages/2_Upload.py")
 
-    docs = fetch_documents(st.session_state.get("access_token", ""))
+    _token = st.session_state.get("access_token", "")
+    _all_docs = fetch_documents(_token)
 
-    if not docs:
-        st.info("No documents found. Go to the **Upload** page.")
+    _docs = _all_docs
+    if _search:
+        _q = _search.lower()
+        _docs = [d for d in _docs if _q in (d.get("filename") or "").lower()]
+    if _sort == "Date ↑ (oldest first)":
+        _docs = sorted(_docs, key=lambda d: d.get("created_at") or "")
+    elif _sort == "Name A→Z":
+        _docs = sorted(_docs, key=lambda d: (d.get("filename") or "").lower())
+
+    # ── Empty state ────────────────────────────────────────────────────────────
+    if not _docs:
+        st.info("No documents yet. Upload your first PDF →")
+        if st.button("Go to Upload", key="picker_go_upload"):
+            st.switch_page("pages/2_Upload.py")
         st.stop()
 
-    STATUS_ICON = {
-        "ocr_done":    "✅",
-        "layout_done": "🗂",
-        "split_done":  "📄",
-        "processing":  "⏳",
-        "error":       "❌",
-    }
+    # ── Pending download ───────────────────────────────────────────────────────
+    _dl_req = st.session_state.pop("_picker_dl_req", None)
+    if _dl_req:
+        with st.spinner("Preparing download…"):
+            api("POST", f"/processing/{_dl_req}/export?format=markdown", timeout=60)
+            _dr = api("GET", f"/processing/{_dl_req}/export-file/markdown")
+        if _dr and _dr.status_code == 200:
+            _dl_doc = next((d for d in _all_docs if d.get("doc_id") == _dl_req), {})
+            _md_name = _dl_doc.get("filename", _dl_req).rsplit(".", 1)[0] + ".md"
+            st.session_state["_picker_dl_ready"] = (_dr.content, _md_name)
+        else:
+            st.warning("Markdown not available yet — run OCR first.")
 
-    for doc in docs:
-        did    = doc["doc_id"]
-        name   = doc.get("filename", did)[:50]
-        pages  = doc.get("page_count", "?")
-        status = doc.get("status", "")
-        icon   = STATUS_ICON.get(status, "📄")
+    if "_picker_dl_ready" in st.session_state:
+        _db, _dn = st.session_state["_picker_dl_ready"]
+        _dc1, _dc2 = st.columns([8, 1])
+        _dc1.download_button(f"⬇ {_dn}", data=_db, file_name=_dn, mime="text/markdown", key="picker_dl_save")
+        if _dc2.button("✕", key="picker_dl_dismiss"):
+            del st.session_state["_picker_dl_ready"]
+            st.rerun()
 
-        col_info, col_btn = st.columns([4, 1])
-        with col_info:
-            st.markdown(f"**{icon} {name}**")
-            st.caption(f"{pages} pp. · status: `{status}`")
-        with col_btn:
-            can_open = status in ("layout_done", "ocr_done")
-            if st.button(
-                "Open",
-                key=f"open_{did}",
-                disabled=not can_open,
-                use_container_width=True,
-                type="primary" if can_open else "secondary",
-            ):
-                st.session_state["viewer_doc_id"] = did
+    # ── Delete confirm ─────────────────────────────────────────────────────────
+    _confirm_id = st.session_state.get("_picker_confirm_delete")
+    if _confirm_id:
+        _cdoc = next((d for d in _all_docs if d.get("doc_id") == _confirm_id), None)
+        _clabel = _cdoc.get("filename", _confirm_id) if _cdoc else _confirm_id
+        st.warning(f"Delete **{_clabel}**? This cannot be undone.")
+        _yc, _nc, _ = st.columns([1, 1, 6])
+        if _yc.button("Yes, delete", type="primary", key="picker_del_yes"):
+            _r = api("DELETE", f"/documents/{_confirm_id}")
+            if _r and _r.status_code in (200, 204):
+                st.session_state.pop("_picker_confirm_delete", None)
+                fetch_documents.clear()
                 st.rerun()
+            else:
+                st.error("Delete failed")
+        if _nc.button("Cancel", key="picker_del_no"):
+            st.session_state.pop("_picker_confirm_delete", None)
+            st.rerun()
+
+    # ── List ───────────────────────────────────────────────────────────────────
+    st.caption(f"{len(_docs)} document{'s' if len(_docs) != 1 else ''}")
+    st.divider()
+
+    _hdr = st.columns([4, 2, 2, 2, 1, 1])
+    for _h, _l in zip(_hdr, ["Filename", "Uploaded", "Parser", "Status", "", ""]):
+        _h.caption(_l)
+
+    for doc in _docs:
+        did     = doc.get("doc_id", "")
+        name    = doc.get("filename", "unknown.pdf")
+        status  = doc.get("status", "")
+        parser  = doc.get("parser") or "OCR pipeline"
+        created = doc.get("created_at")
+        can_open = status in ("done", "layout_done", "ocr_done")
+
+        _cn, _ct, _cp, _css, _co, _cm = st.columns([4, 2, 2, 2, 1, 1])
+        _cn.markdown(f"📄 **{name}**")
+        _ct.write(_relative_time(created))
+        _cp.write(parser)
+        _css.write(_status_badge(status))
+
+        if _co.button(
+            "Open ▶", key=f"open_{did}", use_container_width=True,
+            type="primary" if can_open else "secondary", disabled=not can_open,
+        ):
+            st.session_state["viewer_doc_id"] = did
+            st.rerun()
+
+        with _cm.popover("···", use_container_width=True):
+            if st.button("🔄 Re-parse", key=f"rp_{did}"):
+                st.session_state["reparse_docid"] = did
+                st.switch_page("pages/2_Upload.py")
+            if st.button("⬇ Download .md", key=f"dl_{did}"):
+                st.session_state["_picker_dl_req"] = did
+                st.rerun()
+            if st.button("🗑 Delete", key=f"del_{did}"):
+                st.session_state["_picker_confirm_delete"] = did
+                st.rerun()
+
         st.divider()
 
     st.stop()
