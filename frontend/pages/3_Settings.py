@@ -134,42 +134,44 @@ if clear:
     st.success(f"🗑 Deleted: {', '.join(deleted)}" if deleted else "Nothing to delete")
     st.rerun()
 
-st.markdown("---")
-st.markdown("## 🖥 Service Status")
+current_user = st.session_state.get("current_user", {})
+if current_user.get("is_admin"):
+    st.markdown("---")
+    st.markdown("## 🖥 Service Status")
 
-health = api("GET", "/health") or {}
-models_loaded = health.get("models_loaded", {})
-overall       = health.get("status", "unknown")
+    health = api("GET", "/health") or {}
+    models_loaded = health.get("models_loaded", {})
+    overall       = health.get("status", "unknown")
 
-status_color = {"ok": "🟢", "partial": "🟡", "error": "🔴"}.get(overall, "⚪")
-st.markdown(f"Backend: {status_color} **{overall}**")
+    status_color = {"ok": "🟢", "partial": "🟡", "error": "🔴"}.get(overall, "⚪")
+    st.markdown(f"Backend: {status_color} **{overall}**")
 
-if models_loaded:
-    cols = st.columns(3)
-    for i, (model, loaded) in enumerate(models_loaded.items()):
-        with cols[i % 3]:
-            icon = "✅" if loaded else "❌"
-            st.caption(f"{icon} {model}")
+    if models_loaded:
+        cols = st.columns(3)
+        for i, (model, loaded) in enumerate(models_loaded.items()):
+            with cols[i % 3]:
+                icon = "✅" if loaded else "❌"
+                st.caption(f"{icon} {model}")
 
-st.markdown("---")
-st.markdown("## ⚡ Available Parsers")
+    st.markdown("---")
+    st.markdown("## ⚡ Available Parsers")
 
-parsers = (api("GET", "/quick/parsers") or [])
-if parsers:
-    for p in parsers:
-        avail     = p.get("available", False)
-        needs_key = p.get("needs_api_key", False)
-        icon      = "✅" if avail else "❌"
-        key_icon  = "🔑" if needs_key else "  "
+    parsers = (api("GET", "/quick/parsers") or [])
+    if parsers:
+        for p in parsers:
+            avail     = p.get("available", False)
+            needs_key = p.get("needs_api_key", False)
+            icon      = "✅" if avail else "❌"
+            key_icon  = "🔑" if needs_key else "  "
 
-        key_set = True
-        if needs_key:
-            mapped = _PARSER_PROVIDER.get(p["name"])
-            if mapped:
-                key_set = keys_status.get(mapped, False)
+            key_set = True
+            if needs_key:
+                mapped = _PARSER_PROVIDER.get(p["name"])
+                if mapped:
+                    key_set = keys_status.get(mapped, False)
 
-        note = ""
-        if needs_key and not key_set:
-            note = " — ⚠️ key not set"
+            note = ""
+            if needs_key and not key_set:
+                note = " — ⚠️ key not set"
 
-        st.caption(f"{icon} {key_icon} **{p['label']}**{note}")
+            st.caption(f"{icon} {key_icon} **{p['label']}**{note}")

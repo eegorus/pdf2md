@@ -28,6 +28,7 @@ button[kind="primary"]:hover {
     display: none !important;
 }
 
+
 /* Explicit danger class — use sparingly: st.markdown('<span class="danger">…</span>', unsafe_allow_html=True) */
 .brand-danger  { color: var(--brand-danger);  }
 .brand-success { color: var(--brand-success); }
@@ -35,5 +36,18 @@ button[kind="primary"]:hover {
 """
 
 
+_CSS_HIDE_APP_NAV = """
+<style>
+[data-testid="stSidebarNav"] a[href$="/"],
+[data-testid="stSidebarNav"] li:has(a[href$="/"]) {
+    display: none !important;
+}
+</style>
+"""
+
+
 def inject_global_styles() -> None:
     st.markdown(_CSS, unsafe_allow_html=True)
+    is_admin = st.session_state.get("current_user", {}).get("is_admin", False)
+    if not is_admin:
+        st.markdown(_CSS_HIDE_APP_NAV, unsafe_allow_html=True)
