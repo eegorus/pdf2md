@@ -146,7 +146,7 @@ col_mode, col_save, col_reset, col_dl, col_zip = st.columns([3, 1.2, 1.2, 1.2, 1
 with col_mode:
     view_mode = st.radio(
         "Mode",
-        ["👁 Preview", "✏️ Editor", "↕️ Split"],
+        ["👁 Preview", "↕️ Split"],
         horizontal=True,
         key="md_view_mode",
         label_visibility="collapsed",
@@ -246,90 +246,6 @@ def resolve_media_urls(content: str, doc_id: str) -> str:
     return _IMG_RE.sub(_replace, content)
 
 
-# ─── LaTeX editor tools ───────────────────────────────────────────────────────
-
-def render_latex_toolbar(edit_key: str) -> None:
-    SNIPPETS = [
-        ("x²  — Superscript 2",    "$x^{2}$"),
-        ("xₙ  — Subscript",        "$x_{n}$"),
-        ("10³ft³ — Gas volume",    "$10^3\\,\\text{ft}^3$"),
-        ("10³bbl — Oil volume",    "$10^3\\,\\text{bbl}$"),
-        ("10⁶bbl",                  "$10^6\\,\\text{bbl}$"),
-        ("$/bbl  — Oil price",     "\\$/\\text{bbl}"),
-        ("$/Mscf — Gas price",     "\\$/\\text{Mscf}"),
-        ("CO₂",                     "CO$_{2}$"),
-        ("H₂S",                     "H$_{2}$S"),
-        ("± / ×",                   "$\\pm$ / $\\times$"),
-        ("a/b  — Fraction",        "$\\frac{a}{b}$"),
-        ("∑  — Sum",               "$$\\sum_{i=1}^{n} x_i$$"),
-    ]
-
-    with st.expander("⚡ LaTeX snippets — click field, Ctrl+A, Ctrl+C, then paste into editor", expanded=False):
-        cols = st.columns(3)
-        for i, (label, latex) in enumerate(SNIPPETS):
-            with cols[i % 3]:
-                st.text_input(
-                    label,
-                    value=latex,
-                    key=f"snip_{i}_{edit_key}",
-                    disabled=True,
-                )
-
-
-def render_find_replace(edit_key: str) -> None:
-    with st.expander("🔍 Find & Replace", expanded=False):
-        col1, col2 = st.columns(2)
-        with col1:
-            find_val = st.text_input(
-                "Find",
-                key=f"fr_find_{edit_key}",
-                placeholder=r"10\^?3ft\^?3",
-            )
-        with col2:
-            repl_val = st.text_input(
-                "Replace with",
-                key=f"fr_repl_{edit_key}",
-                placeholder=r"$10^3\,\text{ft}^3$",
-            )
-
-        col_chk, col_cnt, col_go = st.columns([2, 1, 1])
-        with col_chk:
-            use_regex = st.checkbox(
-                "Use regex",
-                value=True,
-                key=f"fr_re_{edit_key}",
-            )
-        with col_cnt:
-            if st.button("Count", key=f"fr_cnt_{edit_key}",
-                         use_container_width=True):
-                content = st.session_state.get(edit_key, "")
-                if find_val:
-                    try:
-                        if use_regex:
-                            matches = re.findall(find_val, content)
-                        else:
-                            matches = content.split(find_val)[:-1]
-                        st.info(f"Found: {len(matches)}")
-                    except re.error as e:
-                        st.error(f"Regex error: {e}")
-        with col_go:
-            if st.button("Replace all", key=f"fr_do_{edit_key}",
-                         use_container_width=True, type="primary"):
-                content = st.session_state.get(edit_key, "")
-                if find_val:
-                    try:
-                        if use_regex:
-                            new_content, count = re.subn(find_val, repl_val, content)
-                        else:
-                            count = content.count(find_val)
-                            new_content = content.replace(find_val, repl_val)
-                        st.session_state[edit_key] = new_content
-                        st.success(f"✅ Replaced: {count}")
-                        st.rerun()
-                    except re.error as e:
-                        st.error(f"Regex error: {e}")
-
-
 # ─── Render helpers ───────────────────────────────────────────────────────────
 
 _HTML_BLOCK_RE = re.compile(
@@ -361,17 +277,7 @@ if view_mode == "👁 Preview":
     resolved = resolve_media_urls(st.session_state.get(_edit_key, md_content), selected_doc_id)
     render_preview(resolved)
 
-elif view_mode == "✏️ Editor":
-    render_latex_toolbar(_edit_key)
-    render_find_replace(_edit_key)
-    new_content = render_editor(st.session_state[_edit_key], _edit_key)
-    if new_content != st.session_state[_edit_key]:
-        st.session_state[_edit_key] = new_content
-        st.session_state[_dirty_key] = True
-
 else:  # Split
-    render_latex_toolbar(_edit_key)
-    render_find_replace(_edit_key)
     col_left, col_right = st.columns(2)
     with col_left:
         st.caption("👁 Preview")

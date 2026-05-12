@@ -261,7 +261,7 @@ for k, v in _defaults.items():
         st.session_state[k] = v
 
 # ─── HEADER ───────────────────────────────────────────────────────────────────
-st.title("🔍 Document Viewer")
+st.title("🔍 My Documents")
 
 doc_id = st.session_state.get("viewer_doc_id") or st.session_state.get("viewer_doc_id")
 if not doc_id:
@@ -365,7 +365,7 @@ if not doc_id:
             type="primary" if can_open else "secondary", disabled=not can_open,
         ):
             st.session_state["viewer_doc_id"] = did
-            st.rerun()
+            st.switch_page("pages/5_Viewer.py")
 
         with _cm.popover("···", use_container_width=True):
             if st.button("🔄 Re-parse", key=f"rp_{did}"):
