@@ -1,7 +1,9 @@
 import re
+import io
 import os
 
 import httpx
+from PIL import Image
 import streamlit as st
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
@@ -139,6 +141,21 @@ if _edit_key not in st.session_state:
     st.session_state[_edit_key] = md_content
     st.session_state[_dirty_key] = False
 
+# ─── Split page state ─────────────────────────────────────────────────────────
+
+_prev_doc_key = "split_prev_doc_id"
+if st.session_state.get(_prev_doc_key) != selected_doc_id:
+    _old_doc = st.session_state.get(_prev_doc_key)
+    if _old_doc:
+        for _k in list(st.session_state.keys()):
+            if _k.startswith(f"split_page_img_{_old_doc}_"):
+                del st.session_state[_k]
+    st.session_state["split_page"] = 1
+    st.session_state[_prev_doc_key] = selected_doc_id
+
+if "split_page" not in st.session_state:
+    st.session_state["split_page"] = 1
+
 # ─── Toolbar ──────────────────────────────────────────────────────────────────
 
 col_mode, col_save, col_reset, col_dl, col_zip = st.columns([3, 1.2, 1.2, 1.2, 1.2])
@@ -246,6 +263,47 @@ def resolve_media_urls(content: str, doc_id: str) -> str:
     return _IMG_RE.sub(_replace, content)
 
 
+# ─── Split helpers ────────────────────────────────────────────────────────────
+
+def fetch_split_page_image(doc_id: str, page_num: int):
+    cache_key = f"split_page_img_{doc_id}_{page_num}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+    token = st.session_state.get("access_token", "")
+    try:
+        resp = httpx.get(
+            f"{BACKEND_URL}/documents/{doc_id}/page-image/{page_num}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            img = Image.open(io.BytesIO(resp.content))
+            st.session_state[cache_key] = img
+            return img
+    except Exception:
+        pass
+    return None
+
+
+def extract_page_markdown(full_md: str, page_num: int) -> str:
+    parts = re.split(
+        r'(?:---\s*\n)?##\s*(?:Страница|Page)\s+(\d+)',
+        full_md, flags=re.IGNORECASE,
+    )
+    pages: dict[int, str] = {}
+    if len(parts) >= 3:
+        for i in range(1, len(parts) - 1, 2):
+            try:
+                pages[int(parts[i])] = parts[i + 1].strip()
+            except (ValueError, IndexError):
+                continue
+    result = pages.get(page_num)
+    if not result:
+        print(f"[split debug] found pages: {sorted(pages.keys())}, requested: {page_num}")
+        return f"*(No content for page {page_num})*"
+    return result
+
+
 # ─── Render helpers ───────────────────────────────────────────────────────────
 
 _HTML_BLOCK_RE = re.compile(
@@ -261,32 +319,56 @@ def render_preview(content: str):
             st.markdown(stripped, unsafe_allow_html=True)
 
 
-def render_editor(content: str, key: str) -> str:
-    return st.text_area(
-        "Markdown",
-        value=content,
-        height=800,
-        key=key + "_area",
-        label_visibility="collapsed",
-    )
-
-
 # ─── Content area ─────────────────────────────────────────────────────────────
 
 if view_mode == "👁 Preview":
     resolved = resolve_media_urls(st.session_state.get(_edit_key, md_content), selected_doc_id)
     render_preview(resolved)
 
-else:  # Split
-    col_left, col_right = st.columns(2)
-    with col_left:
-        st.caption("👁 Preview")
-        with st.container(height=800, border=False):
-            resolved = resolve_media_urls(st.session_state.get(_edit_key, md_content), selected_doc_id)
-            render_preview(resolved)
-    with col_right:
-        st.caption("✏️ Editor")
-        new_content = render_editor(st.session_state[_edit_key], _edit_key)
-        if new_content != st.session_state[_edit_key]:
-            st.session_state[_edit_key] = new_content
-            st.session_state[_dirty_key] = True
+else:  # Split — PDF page left, Markdown page right
+    _doc_info = next((d for d in ready_docs if d["doc_id"] == selected_doc_id), {})
+    total_pages = int(_doc_info.get("page_count") or 1)
+
+    col_prev, col_num, col_next = st.columns([1, 2, 1])
+
+    with col_prev:
+        prev_clicked = st.button(
+            "← Prev",
+            disabled=st.session_state["split_page"] <= 1,
+            use_container_width=True,
+        )
+    with col_next:
+        next_clicked = st.button(
+            "Next →",
+            disabled=st.session_state["split_page"] >= total_pages,
+            use_container_width=True,
+        )
+
+    if prev_clicked:
+        st.session_state["split_page"] = max(1, st.session_state["split_page"] - 1)
+    if next_clicked:
+        st.session_state["split_page"] = min(total_pages, st.session_state["split_page"] + 1)
+
+    with col_num:
+        st.number_input(
+            "Page", min_value=1, max_value=total_pages,
+            key="split_page",
+            label_visibility="collapsed",
+        )
+        st.caption(f"of {total_pages}")
+
+    current_page = st.session_state["split_page"]
+    col_pdf, col_md = st.columns(2)
+
+    with col_pdf:
+        st.caption(f"PDF — page {current_page}")
+        img = fetch_split_page_image(selected_doc_id, current_page)
+        if img:
+            st.image(img, use_container_width=True)
+        else:
+            st.warning("Could not load page image.")
+
+    with col_md:
+        st.caption(f"Markdown — page {current_page}")
+        page_md = extract_page_markdown(md_content, current_page)
+        render_preview(resolve_media_urls(page_md, selected_doc_id))
