@@ -54,7 +54,7 @@ UI: `http://localhost:8501` | Manual testing only (no test suite)
 **Key frontend files:**
 - `pages/0_Auth.py` — login/register, auto-login after register, smart redirect (docs→1_My_Documents / no docs→2_Upload)
 - `pages/1_My_Documents.py` — document library picker + canvas block editor (1000+ LOC); picker: search/sort/cards/delete/download
-- `pages/2_Upload.py` — PDF upload, quick vs detail layout, uses `/users/me/api-keys`
+- `pages/2_Upload.py` — 3-step wizard: step 1 file drop → step 2 mode cards (Quick/Detailed) → step 3 parser grid + Parse PDF; session state: `upload_step` (1/2/3), `upload_mode`, `upload_parser`, `upload_parsing`, `upload_error`; reparse via `reparse_docid`; Quick→Viewer, Detailed→My_Documents
 - `pages/3_Settings.py` — API keys per provider
 - `pages/4_Profile.py` — profile, password change
 - `pages/5_Viewer.py` — edit markdown, LaTeX toolbar, find & replace
@@ -101,7 +101,18 @@ JWT_SECRET_KEY=<64-char hex>
 FERNET_KEY=<base64 32-byte key>
 ```
 
-## Current Status (2026-05-07)
+## Current Status (2026-05-13)
+
+**Last completed (2026-05-13):**
+- ✅ `pages/2_Upload.py` полностью переработан: 3-шаговый wizard (файл → режим → парсер)
+  - Шаг 1: drag-and-drop зона с CSS hover-подсветкой (#7C3AED), показ имени/размера, кнопка "Continue →"
+  - Шаг 2: карточки Quick / Detailed с кнопками "Select Quick" / "Select Detailed"; выбранная карточка — фиолетовый контур
+  - Шаг 3 (Quick): сетка парсеров 2 колонки — Free (без ключа) и Cloud (нужен ключ); карточка: название, описание, индикаторы Speed/Quality (●●●○○); Cloud без ключа — серые + "Add key in Settings"; кнопка "Parse PDF" → поллинг `/quick/{doc_id}/status` → toast + переход в Viewer
+  - Шаг 3 (Detailed): описание + "Parse PDF" → `/processing/{doc_id}/start` → поллинг → переход в My Documents (как раньше)
+  - Обработка ошибок: человекочитаемые сообщения из словаря + кнопки "Try again" / "Choose another parser"
+  - `reparse_docid` из My Documents: пропуск шага 1, поиск имени файла через `/documents/`
+  - Метаданные парсеров (speed/quality/description) захардкожены в `_PARSER_META` на фронте
+  - `5_Viewer.py`: reworked split mode (коммит 0f19289)
 
 **Last completed (2026-05-07):**
 - ✅ My Documents picker: search/sort/cards with relative timestamps, ···popover (re-parse, download .md, delete)
