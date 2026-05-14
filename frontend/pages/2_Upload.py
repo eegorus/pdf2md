@@ -278,7 +278,7 @@ elif st.session_state.upload_step == 3:
             keys_list = keys_r.json() if keys_r and keys_r.status_code == 200 else []
             keys_dict = {k["provider"]: k for k in keys_list}
 
-            free_parsers  = [p for p in parsers_data if not p["needs_api_key"]]
+            free_parsers  = [p for p in parsers_data if not p["needs_api_key"] and p["name"] != "unstructured"]
             cloud_parsers = [p for p in parsers_data if p["needs_api_key"]]
 
             def _parser_card(p, enabled: bool = True):
