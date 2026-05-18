@@ -94,7 +94,7 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
     - Блоки сгруппированы по страницам
     - Таблицы обёрнуты в HTML блок (рендерится в большинстве MD просмотрщиков)
     - Формулы в $$...$$
-    - Рисунки как base64-embedded PNG
+    - Рисунки как подписи
     """
     if not blocks:
         return "# Документ пустой\n"
@@ -118,6 +118,24 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
         if page_num != current_page:
             current_page = page_num
             lines.append(f"\n---\n\n## Страница {page_num}\n")
+
+        # Figures: embed image regardless of whether OCR description is present
+        if block_type == "figure":
+            import base64 as _b64
+            image_path = block.get("image_path", "")
+            raw_alt = output.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+            raw_alt = raw_alt.replace('"', "'").replace("[", "(").replace("]", ")")
+            alt = raw_alt.strip()[:200]
+            if image_path and Path(image_path).exists():
+                with open(image_path, "rb") as _f:
+                    b64 = _b64.b64encode(_f.read()).decode()
+                ext = str(image_path).rsplit(".", 1)[-1].lower() or "png"
+                lines.append(f"![{alt}](data:image/{ext};base64,{b64})\n")
+            elif alt:
+                lines.append(f"_{alt}_\n")
+            else:
+                lines.append("_[Figure]_\n")
+            continue
 
         if not output or "requires manual review" in output:
             lines.append(f"*[{block_type}: требует ручной проверки]*\n")
@@ -149,22 +167,6 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
             # Убираем случайные $ которые OCR мог добавить снаружи
             cleaned = output.strip().lstrip("$").rstrip("$").strip()
             lines.append(f"\n$$\n{cleaned}\n$$\n")
-
-        elif block_type == "figure":
-            image_path = block.get("image_path", "")
-
-            # Чистим alt: убираем переносы, кавычки и скобки — они ломают Markdown
-            raw_alt = (output or "").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-            raw_alt = raw_alt.replace('"', "'").replace("[", "(").replace("]", ")")
-            alt = raw_alt.strip()[:200]
-
-            if image_path and Path(image_path).exists():
-                filename = Path(image_path).name
-                lines.append(f"![](./blocks/{filename})")
-                if alt:
-                    lines.append(f"_{alt}_")
-            else:
-                lines.append(f"_{alt if alt else 'Figure'}_")
 
         else:
             lines.append(output + "\n")

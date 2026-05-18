@@ -55,9 +55,18 @@ def _run_parser(doc_id: str, parser_name: str, api_key: str):
         meta     = json.loads(meta_file.read_text())
         pdf_path = DATA_DIR / "uploads" / doc_id / meta["filename"]
 
-        parser   = get_parser(parser_name)
+        parser       = get_parser(parser_name)
         resolved_key = _resolve_api_key(parser_name, api_key)
-        markdown = parser.run(pdf_path, api_key=resolved_key)
+        blocks_dir   = DATA_DIR / "results" / doc_id / "blocks"
+        markdown     = parser.run(pdf_path, api_key=resolved_key, output_dir=blocks_dir)
+
+        # Convert <!-- page N --> comments (cloud parsers) to ## Страница N headers
+        import re as _re
+        markdown = _re.sub(
+            r'<!--\s*[Pp]age\s+(\d+)\s*-->',
+            lambda m: f"\n---\n\n## Страница {m.group(1)}\n",
+            markdown,
+        )
 
         # Сохраняем результат
         out_dir = DATA_DIR / "results" / doc_id

@@ -297,9 +297,11 @@ def extract_page_markdown(full_md: str, page_num: int) -> str:
                 pages[int(parts[i])] = parts[i + 1].strip()
             except (ValueError, IndexError):
                 continue
+    if not pages:
+        # Quick-mode docs have no page headers — show full document
+        return full_md
     result = pages.get(page_num)
     if not result:
-        print(f"[split debug] found pages: {sorted(pages.keys())}, requested: {page_num}")
         return f"*(No content for page {page_num})*"
     return result
 
@@ -370,5 +372,6 @@ else:  # Split — PDF page left, Markdown page right
 
     with col_md:
         st.caption(f"Markdown — page {current_page}")
-        page_md = extract_page_markdown(md_content, current_page)
+        _live_content = st.session_state.get(_edit_key, md_content)
+        page_md = extract_page_markdown(_live_content, current_page)
         render_preview(resolve_media_urls(page_md, selected_doc_id))

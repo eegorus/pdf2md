@@ -415,11 +415,6 @@ class OCRPipeline:
     def _process_cloud(self, image: "Image.Image", block_type: str, model_id: str) -> str:
         """Отправляет блок в облачную модель через settings API-ключи."""
         import base64, io, httpx, json
-        from pipeline.table_recognizer import (
-            DOTS_SYSTEM_PROMPT, DOTS_USER_PROMPT, TableRecognizer,
-        )
-
-        TABLE_BLOCK_TYPES = {"table", "table_simple", "table_complex"}
 
         settings_file = self.data_dir / "settings.json"
         keys = {}
@@ -430,37 +425,51 @@ class OCRPipeline:
         image.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode()
 
-        is_table = block_type in TABLE_BLOCK_TYPES
+        typeprompts = {
+            "text": "Extract all text from this image exactly as written. Preserve paragraph breaks. Return plain text only.",
+            "table": """Reproduce this table in GitHub-Flavored Markdown (GFM) pipe table format.
+Rules:
+- Include ALL rows and columns — never skip any data.
+- Add separator row (---|---|---) after the first (header) row.
+- Use right-align (---:) for numeric columns, left-align for text.
+- If cells are merged (colspan/rowspan), use HTML <table> instead of GFM.
+- Empty cells: use a single space.
+Return ONLY the Markdown table, no explanation.""",
+            "table_simple": """Reproduce this simple table in GitHub-Flavored Markdown pipe table format.
+Include ALL rows and columns. Add a separator row after the header.
+Use right-align (---:) for numbers. Return ONLY the Markdown table.""",
+            "table_complex": """Reproduce this complex table. It may have merged cells, multi-level headers, or nested structure.
+If merged cells are present, use HTML <table> with colspan/rowspan attributes.
+If no merged cells, use GFM pipe table. Include ALL data — never skip rows or columns.
+Return ONLY the table markup (HTML or Markdown), no explanation.""",
+            "figure": """Describe this figure, chart, diagram, or image in detail for a technical document.
+Output format:
 
-        # Для таблиц используем тот же промпт что и dots.ocr
-        if is_table:
-            system_prompt = DOTS_SYSTEM_PROMPT
-            user_prompt   = DOTS_USER_PROMPT
-        else:
-            system_prompt = None
-            user_prompt   = {
-                "text":    "Extract all text from this image. Return plain text only.",
-                "figure":  "Describe this image/figure in detail for a technical document.",
-                "formula": "Convert this mathematical formula to LaTeX. Return only the LaTeX code.",
-            }.get(block_type, "Extract content from this image.")
+![<type>]()
 
-        def postprocess(raw: str) -> str:
-            if not is_table:
-                return raw
-            cleaned = TableRecognizer._clean_html(raw)
-            return TableRecognizer._add_table_styles(cleaned)
+**Figure:** <Two to four sentences describing: what type of visualization this is,
+what data or subject it shows, key values or labels visible, and any legend items.>
+
+Where <type> is one of: chart | diagram | photo | map | screenshot | illustration
+
+Example output:
+
+![chart]()
+
+**Figure:** Line chart with time (months) on the X-axis and pressure (MPa) on the Y-axis.
+Three wells are shown: Well-1 (blue), Well-2 (red), Well-3 (green).
+Well-1 starts at 28.5 MPa and declines to 14.2 MPa by month 12.
+
+Return ONLY this formatted output.""",
+            "formula": "Convert this mathematical formula or equation to LaTeX. Return ONLY the LaTeX expression wrapped in \\(...\\) for inline or \\[...\\] for block. No explanations.",
+        }
+
+        user_prompt = typeprompts.get(block_type, "Extract content from this image.")
 
         if model_id == "openrouter":
             api_key = keys.get("openrouter", "")
             if not api_key:
                 raise ValueError("OpenRouter API key не задан — добавь в Settings")
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": [
-                {"type": "text",      "text": user_prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-            ]})
             r = httpx.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={
@@ -468,53 +477,53 @@ class OCRPipeline:
                     "HTTP-Referer":  "https://prms-local",
                     "X-Title":       "PRMS Table Extractor",
                 },
-                json={"model": "openai/gpt-4o", "messages": messages, "max_tokens": 4096},
+                json={"model": "openai/gpt-4o", "messages": [
+                    {"role": "user", "content": [
+                        {"type": "text",      "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    ]},
+                ], "max_tokens": 4096},
                 timeout=60,
             )
             r.raise_for_status()
-            return postprocess(r.json()["choices"][0]["message"]["content"])
+            return r.json()["choices"][0]["message"]["content"]
 
         elif model_id == "gpt4o":
             api_key = keys.get("openai", "")
             if not api_key:
                 raise ValueError("OpenAI API key не задан")
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": [
-                {"type": "text",      "text": user_prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-            ]})
             r = httpx.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
-                json={"model": "gpt-4o", "messages": messages, "max_tokens": 4096},
+                json={"model": "gpt-4o", "messages": [
+                    {"role": "user", "content": [
+                        {"type": "text",      "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    ]},
+                ], "max_tokens": 4096},
                 timeout=60,
             )
             r.raise_for_status()
-            return postprocess(r.json()["choices"][0]["message"]["content"])
+            return r.json()["choices"][0]["message"]["content"]
 
         elif model_id == "claude":
             api_key = keys.get("anthropic", "")
             if not api_key:
                 raise ValueError("Anthropic API key не задан")
-            payload = {
-                "model":      "claude-3-5-sonnet-20241022",
-                "max_tokens": 4096,
-                "messages": [{"role": "user", "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
-                    {"type": "text",  "text": user_prompt},
-                ]}],
-            }
-            if system_prompt:
-                payload["system"] = system_prompt
             r = httpx.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
-                json=payload,
+                json={
+                    "model":      "claude-3-5-sonnet-20241022",
+                    "max_tokens": 4096,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
+                        {"type": "text",  "text": user_prompt},
+                    ]}],
+                },
                 timeout=60,
             )
             r.raise_for_status()
-            return postprocess(r.json()["content"][0]["text"])
+            return r.json()["content"][0]["text"]
 
         raise ValueError(f"Неизвестная облачная модель: {model_id}")

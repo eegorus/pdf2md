@@ -159,9 +159,19 @@ if st.session_state.upload_step == 1:
 # ─────────────────────────────────────────────────────────────────────────────
 elif st.session_state.upload_step == 2:
     doc_name = st.session_state.upload_doc_name or ""
-    st.markdown("## Select parsing mode")
-    if doc_name:
-        st.caption(doc_name)
+
+    _col_title, _col_new = st.columns([5, 1])
+    with _col_title:
+        st.markdown("## Select parsing mode")
+        if doc_name:
+            st.caption(doc_name)
+    with _col_new:
+        st.write("")
+        if st.button("⬅ New file", key="btn_new_from_step2", use_container_width=True):
+            for _k in ["upload_step", "upload_doc_id", "upload_doc_name",
+                       "upload_mode", "upload_parser", "upload_parsing", "upload_error"]:
+                st.session_state.pop(_k, None)
+            st.rerun()
 
     _CARD_STYLE = (
         "padding:28px 20px;background:#1e293b;border-radius:12px;"
@@ -219,12 +229,20 @@ elif st.session_state.upload_step == 3:
     )
 
     if not st.session_state.upload_parsing:
-        if st.button("← Back"):
-            st.session_state.upload_step    = 2
-            st.session_state.upload_parser  = None
-            st.session_state.upload_error   = None
-            st.session_state.upload_parsing = False
-            st.rerun()
+        _cb1, _cb2, _ = st.columns([1, 1, 4])
+        with _cb1:
+            if st.button("← Back", key="btn_back_step3"):
+                st.session_state.upload_step    = 2
+                st.session_state.upload_parser  = None
+                st.session_state.upload_error   = None
+                st.session_state.upload_parsing = False
+                st.rerun()
+        with _cb2:
+            if st.button("⬅ New file", key="btn_new_from_step3"):
+                for _k in ["upload_step", "upload_doc_id", "upload_doc_name",
+                           "upload_mode", "upload_parser", "upload_parsing", "upload_error"]:
+                    st.session_state.pop(_k, None)
+                st.rerun()
 
     # ── QUICK mode ────────────────────────────────────────────────────────────
     if mode == "quick":

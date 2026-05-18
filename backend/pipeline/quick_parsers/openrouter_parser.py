@@ -5,7 +5,7 @@ OpenRouter — облачный парсер PDF → Markdown через vision 
 import base64
 import json
 from pathlib import Path
-from .base import BaseParser
+from .base import BaseParser, SYSTEM_PROMPT, PAGE_USER_MSG
 
 
 class OpenRouterParser(BaseParser):
@@ -30,11 +30,12 @@ class OpenRouterParser(BaseParser):
         if not api_key:
             raise ValueError("OpenRouter API key не задан. Добавь в Settings.")
 
-        model = model or self.default_model
-        doc   = fitz.open(str(pdf_path))
-        pages_md = []
+        model       = model or self.default_model
+        doc         = fitz.open(str(pdf_path))
+        total_pages = len(doc)
+        pages_md    = []
 
-        for page_num in range(len(doc)):
+        for page_num in range(total_pages):
             page = doc[page_num]
             # Рендерим страницу в PNG (150 DPI — баланс качество/размер)
             mat  = fitz.Matrix(150 / 72, 150 / 72)
@@ -46,24 +47,23 @@ class OpenRouterParser(BaseParser):
                 "model": model,
                 "messages": [
                     {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT,
+                    },
+                    {
                         "role": "user",
                         "content": [
                             {
                                 "type": "text",
-                                "text": (
-                                    f"This is page {page_num + 1} of a PDF document. "
-                                    "Convert the entire page content to clean Markdown. "
-                                    "Preserve tables as Markdown tables, formulas as LaTeX ($...$), "
-                                    "headings as #/##/###, lists as - items. "
-                                    "Return only the Markdown, no explanations."
-                                ),
+                                "text": PAGE_USER_MSG.format(
+                                    page=page_num + 1, total=total_pages),
                             },
                             {
                                 "type": "image_url",
                                 "image_url": {"url": f"data:image/png;base64,{b64}"},
                             },
                         ],
-                    }
+                    },
                 ],
                 "max_tokens": 4096,
             }
