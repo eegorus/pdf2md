@@ -46,6 +46,9 @@ UI: `http://localhost:8501` | Manual testing only (no test suite)
 - `routers/documents.py` — upload, ownership checks
 - `routers/processing.py` — OCR, export, block CRUD
 - `routers/quick.py` — fast parsing (marker/llamaparse/gpt4o/claude), per-user DB key lookup
+- `pipeline/quick_parsers/base.py` — `BaseParser` ABC: `SYSTEM_PROMPT`, `PAGE_USER_MSG`, `_render_page_b64`, `_extract_figures`, `_inject_figures`, шаблонный `run()`
+- `pipeline/quick_parsers/cloud_parser.py` — `GPT4oParser`, `ClaudeParser` (httpx direct), `LlamaParseParser` (SDK); `_openai_content()`, `_anthropic_content()`
+- `pipeline/quick_parsers/openrouter_parser.py` — `OpenRouterParser`, переиспользует `_openai_content`
 - `routers/settings.py` — public `/available-models` only (legacy `/settings/keys/raw` removed)
 - `pipeline/ocr_pipeline.py` — model routing, VRAM mgmt
 - `database/models.py` — User, Document, UserApiKey, RefreshToken (SQLAlchemy + Alembic)
@@ -101,7 +104,22 @@ JWT_SECRET_KEY=<64-char hex>
 FERNET_KEY=<base64 32-byte key>
 ```
 
-## Current Status (2026-05-13)
+## Current Status (2026-05-19)
+
+**Last completed (2026-05-19):**
+- ✅ Quick parsers рефакторинг — Template Method Pattern в `backend/pipeline/quick_parsers/`
+  - `base.py`: `BaseParser` — абстрактный `_call_api()` + шаблонный `run()` с общей логикой рендера страниц и извлечения фигур
+  - `_render_page_b64()` — рендер страницы PDF → PNG base64 (150 DPI)
+  - `_extract_figures()` — извлечение растровых изображений со страницы через `fitz`, фильтрация мелких (< 80×80 px), нормализованные bbox
+  - `_inject_figures()` — замена `<figure_placeholder_N>` на base64 `data:image/png` теги в готовом Markdown
+  - VLM-парсеры (`gpt4o`, `claude`, `openrouter`) реализуют только `_call_api()`, наследуют `run()`
+  - Локальные/SDK-парсеры (`pymupdf`, `marker`, `docling`, `unstructured`, `llamaparse`) переопределяют `run()`, имеют заглушку `_call_api` с `raise NotImplementedError`
+  - `cloud_parser.py`: GPT4o и Claude переведены на прямые httpx-запросы (без SDK); вспомогательные `_openai_content()` и `_anthropic_content()` формируют multi-image content (страница + фигуры)
+  - `openrouter_parser.py`: переиспользует `_openai_content()` из `cloud_parser`
+  - `SYSTEM_PROMPT` и `PAGE_USER_MSG` вынесены в `base.py` — единый источник
+  - Marker: исправлена ошибка `'str' object has no attribute 'items'` — добавлена `isinstance(images, dict)` проверка
+  - LlamaParse: добавлены маркеры страниц `<!-- Page N -->`
+- ⚠️ **Фигуры (figures) до сих пор не доходят до конечного Markdown** — инфраструктура готова (извлечение + инжект) но требует проверки: модели не вставляют `<figure_placeholder_N>` в ответ, поэтому `_inject_figures()` добавляет теги в конец страницы, а не на место фигуры. Нужно проверить качество на реальных PDF и при необходимости изменить стратегию (возможно, отказаться от плейсхолдеров и всегда добавлять фигуры в конец страницы)
 
 **Last completed (2026-05-13):**
 - ✅ `pages/2_Upload.py` полностью переработан: 3-шаговый wizard (файл → режим → парсер)

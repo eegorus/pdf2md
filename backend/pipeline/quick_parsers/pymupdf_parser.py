@@ -16,6 +16,9 @@ class PyMuPDFParser(BaseParser):
         except ImportError:
             return False
 
+    def _call_api(self, *args, **kwargs) -> str:
+        raise NotImplementedError("PyMuPDF не использует VLM")
+
     def run(self, pdf_path: str | Path, **kwargs) -> str:
         doc = fitz.open(str(pdf_path))
         pages_md = []

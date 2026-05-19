@@ -2,10 +2,10 @@
 OpenRouter — облачный парсер PDF → Markdown через vision модели.
 Использует API-ключ из /app/data/settings.json
 """
-import base64
 import json
 from pathlib import Path
-from .base import BaseParser, SYSTEM_PROMPT, PAGE_USER_MSG
+from .base import BaseParser, SYSTEM_PROMPT
+from .cloud_parser import _openai_content
 
 
 class OpenRouterParser(BaseParser):
@@ -23,65 +23,26 @@ class OpenRouterParser(BaseParser):
         except ImportError:
             return False
 
-    def run(self, pdf_path: Path, api_key: str = "", model: str = "") -> str:
+    def _call_api(self, page_b64, figure_parts, user_msg, api_key, **kwargs) -> str:
         import httpx
-        import fitz  # PyMuPDF
-
-        if not api_key:
-            raise ValueError("OpenRouter API key не задан. Добавь в Settings.")
-
-        model       = model or self.default_model
-        doc         = fitz.open(str(pdf_path))
-        total_pages = len(doc)
-        pages_md    = []
-
-        for page_num in range(total_pages):
-            page = doc[page_num]
-            # Рендерим страницу в PNG (150 DPI — баланс качество/размер)
-            mat  = fitz.Matrix(150 / 72, 150 / 72)
-            pix  = page.get_pixmap(matrix=mat)
-            img_bytes = pix.tobytes("png")
-            b64 = base64.b64encode(img_bytes).decode()
-
-            payload = {
+        model = kwargs.get("model") or self.default_model
+        r = httpx.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization":  f"Bearer {api_key}",
+                "HTTP-Referer":   "https://prms-local",
+                "X-Title":        "PRMS PDF Parser",
+                "Content-Type":   "application/json",
+            },
+            json={
                 "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT,
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": PAGE_USER_MSG.format(
-                                    page=page_num + 1, total=total_pages),
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/png;base64,{b64}"},
-                            },
-                        ],
-                    },
-                ],
                 "max_tokens": 4096,
-            }
-
-            r = httpx.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization":  f"Bearer {api_key}",
-                    "Content-Type":   "application/json",
-                    "HTTP-Referer":   "https://prms-local",
-                    "X-Title":        "PRMS Table Extractor",
-                },
-                json=payload,
-                timeout=60,
-            )
-            r.raise_for_status()
-            content = r.json()["choices"][0]["message"]["content"]
-            pages_md.append(f"<!-- page {page_num + 1} -->\n{content}")
-
-        doc.close()
-        return "\n\n---\n\n".join(pages_md)
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": _openai_content(page_b64, figure_parts, user_msg)},
+                ],
+            },
+            timeout=90,
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]

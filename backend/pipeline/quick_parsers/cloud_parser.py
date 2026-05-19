@@ -1,11 +1,33 @@
 from pathlib import Path
-from .base import BaseParser, SYSTEM_PROMPT, PAGE_USER_MSG
+from .base import BaseParser, SYSTEM_PROMPT
+
+
+def _openai_content(page_b64: str, figure_parts: list[dict], user_msg: str) -> list:
+    content = [
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{page_b64}"}},
+    ]
+    for fp in figure_parts:
+        content.append({"type": "text", "text": fp["label"] + ":"})
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{fp['b64']}"}})
+    content.append({"type": "text", "text": user_msg})
+    return content
+
+
+def _anthropic_content(page_b64: str, figure_parts: list[dict], user_msg: str) -> list:
+    content = [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": page_b64}},
+    ]
+    for fp in figure_parts:
+        content.append({"type": "text", "text": fp["label"] + ":"})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": fp["b64"]}})
+    content.append({"type": "text", "text": user_msg})
+    return content
 
 
 class LlamaParseParser(BaseParser):
-    name        = "llamaparse"
-    label       = "LlamaParse (облако)"
-    description = "Облачный парсер от LlamaIndex. Высокое качество, платный."
+    name          = "llamaparse"
+    label         = "LlamaParse (облако)"
+    description   = "Облачный парсер от LlamaIndex. Высокое качество, платный."
     needs_api_key = True
 
     def is_available(self) -> bool:
@@ -15,113 +37,82 @@ class LlamaParseParser(BaseParser):
         except ImportError:
             return False
 
+    def _call_api(self, *args, **kwargs) -> str:
+        raise NotImplementedError("LlamaParse не использует постраничный VLM")
+
     def run(self, pdf_path: str | Path, api_key: str = "", **kwargs) -> str:
         from llama_parse import LlamaParse
-        output_dir = kwargs.get("output_dir")
-        parser = LlamaParse(
-            api_key=api_key,
-            result_type="markdown",
-            **({"output_dir": str(output_dir)} if output_dir else {}),
-        )
-        docs = parser.load_data(str(pdf_path))
-        parts = []
+        parser = LlamaParse(api_key=api_key, result_type="markdown")
+        docs   = parser.load_data(str(pdf_path))
+        parts  = []
         for i, d in enumerate(docs, 1):
             parts.append(f"<!-- Page {i} -->\n{d.text}")
         return "\n\n---\n\n".join(parts)
 
 
 class GPT4oParser(BaseParser):
-    name        = "gpt4o"
-    label       = "GPT-4o (облако)"
-    description = "Постраничная обработка через GPT-4o Vision. Дорого, но очень высокое качество."
+    name          = "gpt4o"
+    label         = "GPT-4o (облако)"
+    description   = "Постраничная обработка через GPT-4o Vision. Дорого, но очень высокое качество."
     needs_api_key = True
 
     def is_available(self) -> bool:
         try:
-            import openai
+            import httpx
             return True
         except ImportError:
             return False
 
-    def run(self, pdf_path: str | Path, api_key: str = "", model: str = "gpt-4o", **kwargs) -> str:
-        import fitz, base64
-        from openai import OpenAI
-
-        client      = OpenAI(api_key=api_key)
-        doc         = fitz.open(str(pdf_path))
-        total_pages = len(doc)
-        results     = []
-
-        for page in doc:
-            pix  = page.get_pixmap(dpi=150)
-            b64  = base64.b64encode(pix.tobytes("png")).decode()
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
+    def _call_api(self, page_b64, figure_parts, user_msg, api_key, **kwargs) -> str:
+        import httpx
+        r = httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "gpt-4o",
+                "max_tokens": 4096,
+                "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url",
-                             "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                            {"type": "text",
-                             "text": PAGE_USER_MSG.format(
-                                 page=page.number + 1, total=total_pages)},
-                        ],
-                    },
+                    {"role": "user", "content": _openai_content(page_b64, figure_parts, user_msg)},
                 ],
-                max_tokens=4096,
-            )
-            results.append(f"<!-- Page {page.number + 1} -->\n"
-                           + resp.choices[0].message.content)
-        doc.close()
-        return "\n\n---\n\n".join(results)
+            },
+            timeout=90,
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
 
 
 class ClaudeParser(BaseParser):
-    name        = "claude"
-    label       = "Claude (облако)"
-    description = "Постраничная обработка через Claude Vision. Хорош для сложных таблиц."
+    name          = "claude"
+    label         = "Claude (облако)"
+    description   = "Постраничная обработка через Claude Vision. Хорош для сложных таблиц."
     needs_api_key = True
 
     def is_available(self) -> bool:
         try:
-            import anthropic
+            import httpx
             return True
         except ImportError:
             return False
 
-    def run(self, pdf_path: str | Path, api_key: str = "",
-            model: str = "claude-3-5-sonnet-20241022", **kwargs) -> str:
-        import fitz, base64
-        import anthropic as ant
-
-        client      = ant.Anthropic(api_key=api_key)
-        doc         = fitz.open(str(pdf_path))
-        total_pages = len(doc)
-        results     = []
-
-        for page in doc:
-            pix = page.get_pixmap(dpi=150)
-            b64 = base64.b64encode(pix.tobytes("png")).decode()
-            msg = client.messages.create(
-                model=model,
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "image",
-                         "source": {"type": "base64",
-                                    "media_type": "image/png",
-                                    "data": b64}},
-                        {"type": "text",
-                         "text": PAGE_USER_MSG.format(
-                             page=page.number + 1, total=total_pages)},
-                    ],
-                }],
-            )
-            results.append(f"<!-- Page {page.number + 1} -->\n"
-                           + msg.content[0].text)
-        doc.close()
-        return "\n\n---\n\n".join(results)
+    def _call_api(self, page_b64, figure_parts, user_msg, api_key, **kwargs) -> str:
+        import httpx
+        r = httpx.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 4096,
+                "system": SYSTEM_PROMPT,
+                "messages": [
+                    {"role": "user", "content": _anthropic_content(page_b64, figure_parts, user_msg)},
+                ],
+            },
+            timeout=90,
+        )
+        r.raise_for_status()
+        return r.json()["content"][0]["text"]

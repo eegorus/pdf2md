@@ -15,6 +15,9 @@ class MarkerParser(BaseParser):
         except ImportError:
             return False
 
+    def _call_api(self, *args, **kwargs) -> str:
+        raise NotImplementedError("Marker не использует VLM")
+
     def run(self, pdf_path: str | Path, **kwargs) -> str:
         from marker.converters.pdf import PdfConverter
         from marker.models import create_model_dict

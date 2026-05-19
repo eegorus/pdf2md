@@ -20,6 +20,9 @@ class UnstructuredParser(BaseParser):
         except ImportError:
             return False
 
+    def _call_api(self, *args, **kwargs) -> str:
+        raise NotImplementedError("Unstructured не использует VLM")
+
     def run(self, pdf_path: Path, api_key: str = "") -> str:
         from unstructured.partition.pdf import partition_pdf
 

@@ -15,6 +15,9 @@ class DoclingParser(BaseParser):
         except ImportError:
             return False
 
+    def _call_api(self, *args, **kwargs) -> str:
+        raise NotImplementedError("Docling не использует VLM")
+
     def run(self, pdf_path: str | Path, **kwargs) -> str:
         from docling.document_converter import DocumentConverter
 
