@@ -1,4 +1,7 @@
+import base64
+import io
 from pathlib import Path
+
 from .base import BaseParser
 
 
@@ -23,19 +26,17 @@ class MarkerParser(BaseParser):
         from marker.models import create_model_dict
         from marker.output import text_from_rendered
 
-        output_dir = kwargs.get("output_dir")
-
         converter = PdfConverter(artifact_dict=create_model_dict())
         rendered  = converter(str(pdf_path))
-        text, images, _ = text_from_rendered(rendered)
+        text, _, images = text_from_rendered(rendered)
 
-        if output_dir and isinstance(images, dict) and images:
-            blocks_dir = Path(output_dir)
-            blocks_dir.mkdir(parents=True, exist_ok=True)
+        if isinstance(images, dict):
             for img_name, img_obj in images.items():
                 try:
-                    img_obj.save(str(blocks_dir / img_name))
-                    text = text.replace(img_name, f"./blocks/{Path(img_name).name}")
+                    buf = io.BytesIO()
+                    img_obj.save(buf, format="PNG", optimize=True)
+                    b64 = base64.b64encode(buf.getvalue()).decode()
+                    text = text.replace(img_name, f"data:image/png;base64,{b64}")
                 except Exception:
                     pass
 

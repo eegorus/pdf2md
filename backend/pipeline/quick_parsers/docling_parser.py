@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from .base import BaseParser
 
 
@@ -19,8 +20,24 @@ class DoclingParser(BaseParser):
         raise NotImplementedError("Docling не использует VLM")
 
     def run(self, pdf_path: str | Path, **kwargs) -> str:
-        from docling.document_converter import DocumentConverter
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
 
-        converter = DocumentConverter()
-        result    = converter.convert(str(pdf_path))
-        return result.document.export_to_markdown()
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.images_scale = 2.0
+        pipeline_options.generate_page_images = False
+        pipeline_options.generate_picture_images = True
+
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
+        result = converter.convert(str(pdf_path))
+
+        try:
+            from docling.cli.main import ImageRefMode
+            return result.document.export_to_markdown(image_mode=ImageRefMode.EMBEDDED)
+        except (ImportError, TypeError):
+            return result.document.export_to_markdown()

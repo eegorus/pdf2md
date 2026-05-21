@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 import fitz
 from PIL import Image as PILImage
+
+_log = logging.getLogger("prms.quickparser")
 
 
 # ── Промпты ────────────────────────────────────────────────────────────────────
@@ -59,11 +62,14 @@ OUTPUT: Return ONLY Markdown. No code fences, no explanations.
 
 PAGE_USER_MSG = (
     "Page {page} of {total}.\n\n"
+    "This page has {figure_count} embedded figure(s) "
+    "provided as separate images after the page screenshot.\n\n"
     "Convert this page to Markdown per your instructions.\n\n"
     "Reminders:\n"
     "- Tables: ALL rows/columns in GFM.\n"
-    "- Figures: replace each <figure_placeholder_N> with the matching image "
-    "I've provided, then write **Figure N:** caption.\n"
+    "- Figures: replace each <figure_placeholder_N> with the matching "
+    "image I've provided, then write **Figure N:** caption.\n"
+    "- If figure_count is 0, skip figure instructions.\n"
     "- Formulas: LaTeX only.\n\n"
     "Return only the Markdown, nothing else."
 )
@@ -83,24 +89,26 @@ def _extract_figures(
     min_w: int = 80,
     min_h: int = 80,
     max_side: int = 1200,
+    vector_dpi: int = 200,
 ) -> list[dict]:
     """
-    Извлекает встроенные растровые изображения со страницы.
-    Возвращает список: [{index, b64, width, height, bbox_norm}]
-    bbox_norm — (x0, y0, x1, y1) в долях страницы (0..1)
+    Extracts figures from a page — raster xref images first, then vector drawings.
+    Returns list of: [{index, b64, width, height, bbox_norm, source}]
+    bbox_norm — (x0, y0, x1, y1) as fractions of page size (0..1)
     """
     page = doc[pagenum]
     page_rect = page.rect
     results: list[dict] = []
 
-    for idx, img_info in enumerate(page.get_images(full=True)):
-        xref = img_info[0]  # get_images returns tuples; first element is xref
+    # --- Raster xref images ---
+    seen_xrefs: set[int] = set()
+    for info in page.get_image_info(hashes=False, xrefs=True):
+        xref = info.get("xref", 0)
+        if xref <= 0 or xref in seen_xrefs:
+            continue
+        seen_xrefs.add(xref)
         try:
             raw = doc.extract_image(xref)
-        except Exception:
-            continue
-
-        try:
             pil = PILImage.open(io.BytesIO(raw["image"])).convert("RGB")
         except Exception:
             continue
@@ -108,34 +116,108 @@ def _extract_figures(
         w, h = pil.size
         if w < min_w or h < min_h:
             continue
-
         if max(w, h) > max_side:
             ratio = max_side / max(w, h)
             pil = pil.resize((int(w * ratio), int(h * ratio)), PILImage.LANCZOS)
 
+        bbox = info.get("bbox", (0, 0, page_rect.width, page_rect.height))
+        bbox_norm = (
+            bbox[0] / page_rect.width,
+            bbox[1] / page_rect.height,
+            bbox[2] / page_rect.width,
+            bbox[3] / page_rect.height,
+        )
         buf = io.BytesIO()
         pil.save(buf, format="PNG", optimize=True)
-        b64 = base64.b64encode(buf.getvalue()).decode()
-
-        bbox_norm = (0.0, 0.0, 1.0, 1.0)
-        try:
-            for rect in page.get_image_rects(xref):
-                bbox_norm = (
-                    rect.x0 / page_rect.width,
-                    rect.y0 / page_rect.height,
-                    rect.x1 / page_rect.width,
-                    rect.y1 / page_rect.height,
-                )
-                break
-        except Exception:
-            pass
-
         results.append({
-            "index": idx,
-            "b64": b64,
+            "index": len(results),
+            "b64": base64.b64encode(buf.getvalue()).decode(),
             "width": pil.width,
             "height": pil.height,
             "bbox_norm": bbox_norm,
+            "source": "xref",
+        })
+
+    if results:
+        return results
+
+    # --- Vector drawings fallback: cluster paths and render each cluster ---
+    drawings = page.get_drawings()
+    if not drawings:
+        return []
+
+    page_area = page_rect.width * page_rect.height
+    rects: list[fitz.Rect] = []
+    for d in drawings:
+        r = d.get("rect")
+        if not r:
+            continue
+        r = fitz.Rect(r)
+        if r.width < min_w or r.height < min_h:
+            continue
+        # Skip near-full-page bounding boxes (borders, backgrounds)
+        if (r.width * r.height) / page_area > 0.80:
+            continue
+        rects.append(r)
+
+    if not rects:
+        return []
+
+    # Merge overlapping/nearby rects into clusters
+    MERGE_GAP = 20
+    clusters: list[fitz.Rect] = []
+    for r in sorted(rects, key=lambda x: (x.y0, x.x0)):
+        merged = False
+        for i, c in enumerate(clusters):
+            expanded = fitz.Rect(
+                c.x0 - MERGE_GAP, c.y0 - MERGE_GAP,
+                c.x1 + MERGE_GAP, c.y1 + MERGE_GAP,
+            )
+            if expanded.intersects(r):
+                clusters[i] = c | r
+                merged = True
+                break
+        if not merged:
+            clusters.append(fitz.Rect(r))
+
+    mat = fitz.Matrix(vector_dpi / 72, vector_dpi / 72)
+    pad = 10
+    for cluster_rect in clusters:
+        if cluster_rect.width < min_w or cluster_rect.height < min_h:
+            continue
+
+        crop = fitz.Rect(
+            max(0, cluster_rect.x0 - pad),
+            max(0, cluster_rect.y0 - pad),
+            min(page_rect.width,  cluster_rect.x1 + pad),
+            min(page_rect.height, cluster_rect.y1 + pad),
+        )
+        pix = page.get_pixmap(matrix=mat, clip=crop)
+        try:
+            pil = PILImage.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+        except Exception:
+            continue
+
+        w, h = pil.size
+        if max(w, h) > max_side:
+            ratio = max_side / max(w, h)
+            pil = pil.resize((int(w * ratio), int(h * ratio)), PILImage.LANCZOS)
+
+        bbox_norm = (
+            crop.x0 / page_rect.width,
+            crop.y0 / page_rect.height,
+            crop.x1 / page_rect.width,
+            crop.y1 / page_rect.height,
+        )
+        buf = io.BytesIO()
+        pil.save(buf, format="PNG", optimize=True)
+        results.append({
+            "index": len(results),
+            "b64": base64.b64encode(buf.getvalue()).decode(),
+            "width": pil.width,
+            "height": pil.height,
+            "bbox_norm": bbox_norm,
+            "source": "vector",
         })
 
     return results
@@ -197,6 +279,14 @@ class BaseParser(ABC):
         for pagenum in range(total):
             page_b64 = _render_page_b64(doc[pagenum], dpi=150)
             figures  = _extract_figures(doc, pagenum)
+            _log.info(
+                "[%s] page %d/%d: %d figures%s",
+                self.name, pagenum + 1, total, len(figures),
+                (" (" + ", ".join(
+                    f"{f['width']}x{f['height']}px [{f.get('source','?')}]"
+                    for f in figures
+                ) + ")") if figures else "",
+            )
 
             figure_parts: list[dict] = []
             figure_map: dict[str, str] = {}
@@ -215,7 +305,12 @@ class BaseParser(ABC):
                     "b64": fig["b64"],
                 })
 
-            user_msg = PAGE_USER_MSG.format(page=pagenum + 1, total=total)
+            figure_count = len(figures)
+            user_msg = PAGE_USER_MSG.format(
+                page=pagenum + 1,
+                total=total,
+                figure_count=figure_count,
+            )
 
             try:
                 md_raw = self._call_api(

@@ -618,20 +618,6 @@ with col_left:
     if st.checkbox("➗ Formula",       value=True): show_types.add("formula")
     if st.checkbox("🖼 Figure",        value=True): show_types.add("figure")
 
-    st.markdown("---")
-    st.markdown("### 📊 Page")
-    st.caption(f"📄 {doc_name[:28]}")
-    page_blocks_cur = [b for b in all_blocks
-                       if b.get("page_num") == st.session_state.viewer_page]
-    type_counts = Counter(b.get("block_type") for b in page_blocks_cur)
-    st.metric("Pages", total_pages)
-    st.metric("Total blocks", len(all_blocks))
-    for btype, cnt in sorted(type_counts.items()):
-        emoji = {"text": "🔵", "table": "🟠", "table_simple": "🟡", "table_complex": "🟠", "formula": "🟢", "figure": "🟣"}.get(btype, "⚪")
-        st.caption(f"{emoji} {btype}: {cnt}")
-    nr = sum(1 for b in all_blocks if b.get("status") == "needs_review")
-    if nr:
-        st.markdown(f"🔴 **needs_review: {nr}**")
 
     st.markdown("---")
     total_blocks_count  = len(all_blocks)

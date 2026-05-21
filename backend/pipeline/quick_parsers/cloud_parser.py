@@ -1,4 +1,6 @@
+import base64
 from pathlib import Path
+
 from .base import BaseParser, SYSTEM_PROMPT
 
 
@@ -41,12 +43,34 @@ class LlamaParseParser(BaseParser):
         raise NotImplementedError("LlamaParse не использует постраничный VLM")
 
     def run(self, pdf_path: str | Path, api_key: str = "", **kwargs) -> str:
+        import fitz
         from llama_parse import LlamaParse
+
         parser = LlamaParse(api_key=api_key, result_type="markdown")
         docs   = parser.load_data(str(pdf_path))
-        parts  = []
+
+        doc = fitz.open(str(pdf_path))
+        parts = []
         for i, d in enumerate(docs, 1):
-            parts.append(f"<!-- Page {i} -->\n{d.text}")
+            page_text = d.text
+            page_idx  = i - 1
+            if page_idx < len(doc):
+                page = doc[page_idx]
+                for img_idx, img_info in enumerate(page.get_images(full=True), 1):
+                    xref = img_info[0]
+                    try:
+                        base_image = doc.extract_image(xref)
+                        w = base_image.get("width", 0)
+                        h = base_image.get("height", 0)
+                        if w < 50 or h < 50:
+                            continue
+                        b64  = base64.b64encode(base_image["image"]).decode()
+                        ext  = base_image.get("ext", "png")
+                        page_text += f"\n\n![Figure {img_idx}](data:image/{ext};base64,{b64})\n\n"
+                    except Exception:
+                        pass
+            parts.append(f"<!-- Page {i} -->\n{page_text}")
+        doc.close()
         return "\n\n---\n\n".join(parts)
 
 
