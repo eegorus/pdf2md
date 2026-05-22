@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -236,6 +237,43 @@ def _inject_figures(md: str, figure_map: dict[str, str]) -> str:
     return md
 
 
+def _positional_inject(md: str, figures: list[dict]) -> str:
+    """
+    Insert figure images at geometrically correct paragraph positions.
+    Uses bbox_norm[1..3] (y-fraction) from _extract_figures to map each figure
+    to the closest paragraph break in the markdown text.
+    Falls back to appending at end if markdown has no paragraph breaks.
+    """
+    if not figures:
+        return md
+
+    sorted_figs = sorted(
+        figures,
+        key=lambda f: (f["bbox_norm"][1] + f["bbox_norm"][3]) / 2,
+    )
+
+    paragraphs = re.split(r"\n\n+", md.strip())
+    n = len(paragraphs)
+    if n == 0:
+        return md
+
+    insertions: dict[int, list[str]] = {}
+    for fig in sorted_figs:
+        y_center = (fig["bbox_norm"][1] + fig["bbox_norm"][3]) / 2
+        idx = min(int(y_center * n), n - 1)
+        # _extract_figures always saves as PNG
+        img_tag = f"![figure](data:image/png;base64,{fig['b64']})"
+        insertions.setdefault(idx, []).append(img_tag)
+
+    parts: list[str] = []
+    for i, para in enumerate(paragraphs):
+        parts.append(para)
+        if i in insertions:
+            parts.extend(insertions[i])
+
+    return "\n\n".join(parts)
+
+
 # ── Базовый класс ──────────────────────────────────────────────────────────────
 
 class BaseParser(ABC):
@@ -323,7 +361,7 @@ class BaseParser(ABC):
             except Exception as e:
                 md_raw = f"<!-- ERROR page {pagenum + 1}: {e} -->"
 
-            md_page = _inject_figures(md_raw, figure_map)
+            md_page = _positional_inject(md_raw, figures)
             pages_md.append(f"<!-- page {pagenum + 1} -->\n{md_page}")
 
         doc.close()

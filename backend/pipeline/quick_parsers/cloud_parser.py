@@ -43,6 +43,7 @@ class LlamaParseParser(BaseParser):
         raise NotImplementedError("LlamaParse не использует постраничный VLM")
 
     def run(self, pdf_path: str | Path, api_key: str = "", **kwargs) -> str:
+        import re
         import fitz
         from llama_parse import LlamaParse
 
@@ -50,28 +51,62 @@ class LlamaParseParser(BaseParser):
         docs   = parser.load_data(str(pdf_path))
 
         doc = fitz.open(str(pdf_path))
-        parts = []
+        result_pages = []
+
         for i, d in enumerate(docs, 1):
+            page_num  = i - 1
             page_text = d.text
-            page_idx  = i - 1
-            if page_idx < len(doc):
-                page = doc[page_idx]
-                for img_idx, img_info in enumerate(page.get_images(full=True), 1):
-                    xref = img_info[0]
-                    try:
-                        base_image = doc.extract_image(xref)
-                        w = base_image.get("width", 0)
-                        h = base_image.get("height", 0)
-                        if w < 50 or h < 50:
-                            continue
-                        b64  = base64.b64encode(base_image["image"]).decode()
-                        ext  = base_image.get("ext", "png")
-                        page_text += f"\n\n![Figure {img_idx}](data:image/{ext};base64,{b64})\n\n"
-                    except Exception:
-                        pass
-            parts.append(f"<!-- Page {i} -->\n{page_text}")
+
+            if page_num >= len(doc):
+                result_pages.append(f"<!-- Page {i} -->\n{page_text}")
+                continue
+
+            page   = doc[page_num]
+            page_h = page.rect.height
+
+            image_items: list[tuple[float, str]] = []
+            seen_xrefs: set[int] = set()
+            for info in page.get_image_info(xrefs=True):
+                xref = info.get("xref", 0)
+                if xref <= 0 or xref in seen_xrefs:
+                    continue
+                seen_xrefs.add(xref)
+                try:
+                    raw = doc.extract_image(xref)
+                    if raw.get("width", 0) < 50 or raw.get("height", 0) < 50:
+                        continue
+                    bbox = info.get("bbox", (0, 0, 0, page_h))
+                    y_center = (bbox[1] + bbox[3]) / 2
+                    rel_pos  = y_center / page_h
+                    b64 = base64.b64encode(raw["image"]).decode()
+                    ext = raw.get("ext", "png")
+                    image_items.append((rel_pos, f"![Figure](data:image/{ext};base64,{b64})"))
+                except Exception:
+                    pass
+
+            if not image_items:
+                result_pages.append(f"<!-- Page {i} -->\n{page_text}")
+                continue
+
+            image_items.sort(key=lambda x: x[0])
+            paragraphs = re.split(r"\n\n+", page_text.strip())
+            n = len(paragraphs)
+
+            insertions: dict[int, list[str]] = {}
+            for rel_pos, img_tag in image_items:
+                idx = min(int(rel_pos * n), n - 1)
+                insertions.setdefault(idx, []).append(img_tag)
+
+            parts: list[str] = []
+            for j, para in enumerate(paragraphs):
+                parts.append(para)
+                if j in insertions:
+                    parts.extend(insertions[j])
+
+            result_pages.append(f"<!-- Page {i} -->\n" + "\n\n".join(parts))
+
         doc.close()
-        return "\n\n---\n\n".join(parts)
+        return "\n\n---\n\n".join(result_pages)
 
 
 class GPT4oParser(BaseParser):
