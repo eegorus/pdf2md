@@ -1,7 +1,69 @@
 import base64
+import re as _re
 from pathlib import Path
 
 from .base import BaseParser, SYSTEM_PROMPT
+
+
+def _normalize_latex_delimiters(text: str) -> str:
+    """
+    Convert all LaTeX delimiter variants to KaTeX-compatible \(...\) and \[...\].
+
+    LlamaParse parse_page_with_lvm outputs formulas as:
+      [ \command ... ]          ← single or multiline, block
+      [ \command ... \ldots(N)] ← with equation number
+      $...$  or  $$...$$        ← dollar variants
+
+    KaTeX understands ONLY:
+      \( ... \)   inline
+      \[ ... \]   block
+    """
+    # ── Step 1: protect base64 data URIs ─────────────────────────────────
+    _protected: list[str] = []
+
+    def _protect(m: _re.Match) -> str:
+        idx = len(_protected)
+        _protected.append(m.group(0))
+        return f"\x00P{idx}\x00"
+
+    text = _re.sub(
+        r'data:image/[^;]+;base64,[A-Za-z0-9+/=\n\r]+',
+        _protect, text
+    )
+
+    # ── Step 2: protect already-correct \[...\] and \(...\) ──────────────
+    text = _re.sub(r'\\\[.*?\\\]', _protect, text, flags=_re.DOTALL)
+    text = _re.sub(r'\\\(.*?\\\)', _protect, text, flags=_re.DOTALL)
+
+    # ── Step 3: $$...$$ → \[...\]  (display, must precede $...$) ─────────
+    text = _re.sub(
+        r'\$\$(.+?)\$\$',
+        lambda m: r'\[' + m.group(1) + r'\]',
+        text, flags=_re.DOTALL
+    )
+
+    # ── Step 4: $...$ → \(...\)  (inline) ────────────────────────────────
+    text = _re.sub(
+        r'(?<!\$)\$([^\$]{1,400}?)\$(?!\$)',
+        lambda m: r'\(' + m.group(1) + r'\)',
+        text, flags=_re.DOTALL
+    )
+
+    # ── Step 5: [ ... ] → \[...\]  (LlamaParse lvm style) ──────────────
+    # Lookahead (?=[\s\S]*\\[a-zA-Z]) ensures the bracket contains at least
+    # one LaTeX command, distinguishing math from markdown links/footnotes.
+    # Handles both single-line and multiline block formulas.
+    text = _re.sub(
+        r'\[\s*((?=[\s\S]*\\[a-zA-Z])[\s\S]{1,2000}?)\s*\]',
+        lambda m: r'\[' + m.group(1).strip() + r'\]',
+        text, flags=_re.DOTALL
+    )
+
+    # ── Step 6: restore protected blocks ─────────────────────────────────
+    for idx, original in enumerate(_protected):
+        text = text.replace(f"\x00P{idx}\x00", original)
+
+    return text
 
 
 def _openai_content(page_b64: str, figure_parts: list[dict], user_msg: str) -> list:
@@ -47,7 +109,11 @@ class LlamaParseParser(BaseParser):
         import fitz
         from llama_parse import LlamaParse
 
-        parser = LlamaParse(api_key=api_key, result_type="markdown")
+        parser = LlamaParse(
+            api_key=api_key,
+            result_type="markdown",
+            parse_mode="parse_page_with_lvm",
+        )
         docs   = parser.load_data(str(pdf_path))
 
         doc = fitz.open(str(pdf_path))
@@ -106,7 +172,9 @@ class LlamaParseParser(BaseParser):
             result_pages.append(f"<!-- Page {i} -->\n" + "\n\n".join(parts))
 
         doc.close()
-        return "\n\n---\n\n".join(result_pages)
+        result = "\n\n---\n\n".join(result_pages)
+        result = _normalize_latex_delimiters(result)
+        return result
 
 
 class GPT4oParser(BaseParser):
