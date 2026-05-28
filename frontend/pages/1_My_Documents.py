@@ -8,7 +8,6 @@ from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_drawable_canvas import st_canvas
 import io
-from collections import Counter
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 
@@ -122,53 +121,6 @@ def fetch_page_image(doc_id: str, page_num: int, token: str = "", max_w: int = 7
     return None, 0, 0, 1.0
 
 
-def _render_export_buttons(doc_id: str, has_ocr: bool, key_prefix: str = "exp"):
-    export_formats = [
-        ("markdown", "📄 MARKDOWN", "application/zip", "zip"),
-        ("json",     "🗂 JSON",     "application/json", "json"),
-        ("csv",      "📊 CSV",      "text/csv",         "csv"),
-    ]
-    for fmt, label, mime, ext in export_formats:
-        cache_key = f"{key_prefix}_bytes_{fmt}"
-
-        if has_ocr:
-            if st.button(label, use_container_width=True, key=f"{key_prefix}_gen_{fmt}"):
-                with st.spinner(f"Generating {fmt}..."):
-                    api("POST", f"/processing/{doc_id}/export?format={fmt}", timeout=60)
-                    if fmt == "markdown":
-                        dl = api("GET", f"/processing/{doc_id}/export-zip", timeout=30)
-                    else:
-                        dl = api("GET", f"/processing/{doc_id}/export-file/{fmt}", timeout=30)
-                    if dl and dl.status_code == 200:
-                        st.session_state[cache_key] = {
-                            "content":  dl.content,
-                            "filename": f"{doc_id[:8]}.{ext}",
-                            "mime":     mime,
-                        }
-                    elif dl:
-                        st.error(f"Export error: {dl.status_code}")
-
-            cached = st.session_state.get(cache_key)
-            if cached:
-                st.download_button(
-                    f"⬇ Download .{ext}",
-                    data=cached["content"],
-                    file_name=cached["filename"],
-                    mime=cached["mime"],
-                    use_container_width=True,
-                    key=f"{key_prefix}_dl_{fmt}",
-                )
-        else:
-            st.button(label, disabled=True, use_container_width=True,
-                      key=f"{key_prefix}_dis_{fmt}")
-
-    if not has_ocr:
-        st.caption("run OCR first")
-
-    if st.button("📄 Open in MD Viewer", use_container_width=True, key=f"{key_prefix}_go_md"):
-        st.session_state["md_viewer_doc_id"] = doc_id
-        st.switch_page("pages/5_Viewer.py")
-
 
 def _relative_time(iso_str: str | None) -> str:
     if not iso_str:
@@ -204,7 +156,6 @@ def draw_blocks_on_image(
     image: Image.Image,
     blocks: list,
     page_num: int,
-    show_types: set,
     selected_id: str | None,
     scale: float = 1.0,
 ) -> Image.Image:
@@ -215,8 +166,6 @@ def draw_blocks_on_image(
         if block.get("page_num") != page_num:
             continue
         btype = block.get("block_type", "text")
-        if btype not in show_types:
-            continue
         bbox = block.get("bbox", [])
         if len(bbox) != 4:
             continue
@@ -609,17 +558,6 @@ with col_left:
             st.rerun()
 
     st.markdown("---")
-    st.markdown("### 🎨 Filters")
-    show_types = set()
-    if st.checkbox("📝 Text",          value=True): show_types.add("text")
-    if st.checkbox("📊 Table",         value=True): show_types.add("table")
-    if st.checkbox("📊 Simple table",  value=True): show_types.add("table_simple")
-    if st.checkbox("📊 Complex table", value=True): show_types.add("table_complex")
-    if st.checkbox("➗ Formula",       value=True): show_types.add("formula")
-    if st.checkbox("🖼 Figure",        value=True): show_types.add("figure")
-
-
-    st.markdown("---")
     total_blocks_count  = len(all_blocks)
     marked_blocks_count = sum(1 for b in all_blocks if b.get("block_type"))
     if total_blocks_count > 0:
@@ -727,7 +665,7 @@ with col_main:
 
         annotated = draw_blocks_on_image(
             page_img, all_blocks,
-            st.session_state.viewer_page, show_types,
+            st.session_state.viewer_page,
             st.session_state.viewer_selected_block,
             scale=scale,
         )
@@ -899,8 +837,6 @@ with col_main:
                 for b in all_blocks:
                     if b.get("page_num") != st.session_state.viewer_page:
                         continue
-                    if b.get("block_type") not in show_types:
-                        continue
                     bx = b.get("bbox", [])
                     if len(bx) == 4 and bx[0] <= ox <= bx[2] and bx[1] <= oy <= bx[3]:
                         clicked = b["block_id"]
@@ -920,7 +856,6 @@ with col_main:
     page_blocks_filtered = [
         b for b in all_blocks
         if b.get("page_num") == st.session_state.viewer_page
-        and b.get("block_type") in show_types
     ]
     if page_blocks_filtered:
         for row in [page_blocks_filtered[i:i+4]
@@ -971,13 +906,6 @@ with col_right:
             )
         else:
             st.caption("Click a block on the image or select from list")
-        st.markdown("---")
-        st.markdown("**📤 Export**")
-        _has_ocr = any(
-            b.get("status") in ("ocr_done", "accepted", "needs_review")
-            for b in all_blocks
-        )
-        _render_export_buttons(doc_id, _has_ocr, key_prefix="exp_left")
         st.stop()
 
     block = next((b for b in all_blocks if b["block_id"] == selected_id), None)
