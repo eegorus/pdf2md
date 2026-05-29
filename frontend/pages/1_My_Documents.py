@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_drawable_canvas import st_canvas
+from streamlit_sortables import sort_items
 import io
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
@@ -317,9 +318,17 @@ if not doc_id:
             st.switch_page("pages/5_Viewer.py")
 
         with _cm.popover("···", use_container_width=True):
-            if st.button("🔄 Re-parse", key=f"rp_{did}"):
-                st.session_state["reparse_docid"] = did
-                st.switch_page("pages/2_Upload.py")
+            _can_editor = status in ("layout_done", "ocr_done", "done")
+            if st.button(
+                "📋 Open Editor",
+                key=f"open_editor_{did}",
+                disabled=not _can_editor,
+                help="Open block editor" if _can_editor else "Available after layout detection",
+            ):
+                st.session_state["viewer_doc_id"]           = did
+                st.session_state["viewer_page"]             = 1
+                st.session_state["viewer_selected_block"]   = None
+                st.rerun()
             if st.button("⬇ Download .md", key=f"dl_{did}"):
                 st.session_state["_picker_dl_req"] = did
                 st.rerun()
@@ -721,34 +730,9 @@ with col_main:
                     f"· {ox2-ox1}×{oy2-oy1} px</div>",
                     unsafe_allow_html=True,
                 )
-                ab1, ab2 = st.columns([2, 1])
-                with ab1:
-                    if st.button("✅ Add block", use_container_width=True,
-                                 type="primary", key="btn_canvas_add"):
-                        resp = api("POST", f"/processing/{doc_id}/blocks",
-                                   json={
-                                       "block_type": draw_type,
-                                       "page_num":   st.session_state.viewer_page,
-                                       "bbox":       [ox1, oy1, ox2, oy2],
-                                   }, timeout=10)
-                        if resp and resp.status_code == 200:
-                            new_id = resp.json().get("block_id")
-                            _stk = st.session_state.undo_stack
-                            _stk.append({"action": "add", "block_id": new_id})
-                            if len(_stk) > 10:
-                                _stk.pop(0)
-                            fetch_blocks.clear()
-                            st.session_state.viewer_canvas_version += 1
-                            st.session_state.viewer_draw_mode      = False
-                            st.session_state.viewer_selected_block = new_id
-                            st.rerun()
-                        elif resp:
-                            st.error(f"Error {resp.status_code}: {resp.text[:80]}")
-                with ab2:
-                    if st.button("🔄 Redraw", use_container_width=True, key="btn_redraw"):
-                        st.session_state.viewer_canvas_version += 1
-                        st.rerun()
+                st.session_state["_drawn_rect"] = _drawn_rect
             else:
+                st.session_state.pop("_drawn_rect", None)
                 st.info("🖱 Draw a rectangle for a new block (drag)", icon=None)
 
         elif st.session_state.viewer_mode == "edit" and st.session_state.viewer_selected_block:
@@ -850,61 +834,143 @@ with col_main:
     else:
         st.warning("Page image unavailable")
 
-    # ── Block list ────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("**Blocks on page:**")
-    page_blocks_filtered = [
-        b for b in all_blocks
-        if b.get("page_num") == st.session_state.viewer_page
-    ]
-    if page_blocks_filtered:
-        for row in [page_blocks_filtered[i:i+4]
-                    for i in range(0, len(page_blocks_filtered), 4)]:
-            rcols = st.columns(4)
-            for col, block in zip(rcols, row):
-                bid     = block["block_id"]
-                btype   = block.get("block_type", "?")
-                bstatus = block.get("status", "")
-                is_sel  = bid == st.session_state.viewer_selected_block
-                s_icon  = {"needs_review": "🔴", "accepted": "✅",
-                           "ocr_done": "🔵", "error": "❌"}.get(bstatus, "⚪")
-                t_icon  = {"text": "📝", "table": "📊", "table_simple": "📊", "table_complex": "📊",
-                           "formula": "➗", "figure": "🖼"}.get(btype, "?")
-                with col:
-                    if st.button(
-                        f"{'▶' if is_sel else ''}{t_icon}{s_icon}",
-                        key=f"sel_{bid}",
-                        use_container_width=True,
-                        help=f"{bid}\n{btype} · {bstatus}",
-                    ):
-                        st.session_state.viewer_selected_block = None if is_sel else bid
-                        st.session_state.viewer_edit_mode      = False
-                        st.session_state.viewer_confirm_delete = False
-                        st.session_state.viewer_mode           = None
-                        st.rerun()
-    else:
-        st.caption("No blocks on this page")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RIGHT — block details
+# RIGHT — draw actions + block list + block details
 # ══════════════════════════════════════════════════════════════════════════════
 with col_right:
     st.markdown("### 🔧 Tools")
+
+    # ── Draw mode: Add block / Redraw (правка 1 — кнопки выше канваса) ────
+    if st.session_state.viewer_draw_mode:
+        _drawn_rect = st.session_state.get("_drawn_rect")
+        draw_type   = st.session_state.viewer_draw_type
+        rgb         = BLOCK_COLORS.get(draw_type, (128, 128, 128))
+        if _drawn_rect:
+            ox1, oy1, ox2, oy2 = _drawn_rect
+            ab1, ab2 = st.columns([2, 1])
+            with ab1:
+                if st.button("✅ Add block", use_container_width=True,
+                             type="primary", key="btn_canvas_add"):
+                    resp = api("POST", f"/processing/{doc_id}/blocks",
+                               json={
+                                   "block_type": draw_type,
+                                   "page_num":   st.session_state.viewer_page,
+                                   "bbox":       [ox1, oy1, ox2, oy2],
+                               }, timeout=10)
+                    if resp and resp.status_code == 200:
+                        new_id = resp.json().get("block_id")
+                        _stk = st.session_state.undo_stack
+                        _stk.append({"action": "add", "block_id": new_id})
+                        if len(_stk) > 10:
+                            _stk.pop(0)
+                        fetch_blocks.clear()
+                        st.session_state.viewer_canvas_version += 1
+                        st.session_state.viewer_draw_mode      = False
+                        st.session_state.viewer_selected_block = new_id
+                        st.session_state.pop("_drawn_rect", None)
+                        st.rerun()
+                    elif resp:
+                        st.error(f"Error {resp.status_code}: {resp.text[:80]}")
+            with ab2:
+                if st.button("🔄 Redraw", use_container_width=True, key="btn_redraw"):
+                    st.session_state.viewer_canvas_version += 1
+                    st.session_state.pop("_drawn_rect", None)
+                    st.rerun()
+        else:
+            st.markdown(
+                f"<div style='padding:10px;background:rgba({rgb[0]},{rgb[1]},{rgb[2]},0.1);"
+                f"border:1px solid {TYPE_HEX[draw_type]};border-radius:8px;font-size:13px'>"
+                f"<b>✏️ Draw mode ({draw_type})</b><br><br>"
+                f"Draw a rectangle on the canvas, then click <b>Add block</b></div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown("---")
+
+    # ── Block list (правка 2 — sortable, в правой панели) ─────────────────
+    _page_blocks = [
+        b for b in all_blocks
+        if b.get("page_num") == st.session_state.viewer_page
+    ]
+    _order_key = f"block_order_{doc_id}_p{st.session_state.viewer_page}"
+    _saved_order = st.session_state.get(_order_key)
+
+    _t_icon = {"text": "📝", "table": "📊", "table_simple": "📊",
+               "table_complex": "📊", "formula": "➗", "figure": "🖼"}
+    _s_icon = {"needs_review": "🔴", "accepted": "✅", "ocr_done": "🔵", "error": "❌"}
+
+    if _page_blocks:
+        # label = "<icon> <TYPE> | <full_block_id>" — полный ID, без укорачивания
+        _labels = [
+            f"{_t_icon.get(b.get('block_type',''),'?')} {b.get('block_type','?').upper()} | {b['block_id']}"
+            for b in _page_blocks
+        ]
+
+        if _saved_order:
+            _saved_ids = {lbl.split(" | ")[1] for lbl in _saved_order if " | " in lbl}
+            _reordered = [b for b in _page_blocks if b["block_id"] in _saved_ids]
+            _remaining = [b for b in _page_blocks if b not in _reordered]
+            _page_blocks_sorted = _reordered + _remaining
+            _labels = [
+                f"{_t_icon.get(b.get('block_type',''),'?')} {b.get('block_type','?').upper()} | {b['block_id']}"
+                for b in _page_blocks_sorted
+            ]
+        else:
+            _page_blocks_sorted = _page_blocks
+
+        st.caption(f"Blocks on page: {len(_page_blocks)}")
+        _sorted_labels = sort_items(
+            _labels,
+            direction="vertical",
+            key=f"sort_{doc_id}_p{st.session_state.viewer_page}",
+        )
+        if _sorted_labels != _labels:
+            st.session_state[_order_key] = _sorted_labels
+
+        # Selectbox для выбора блока (sort_items не поддерживает клик)
+        _id_to_block = {b["block_id"]: b for b in _page_blocks}
+        _sorted_ids = [lbl.split(" | ")[1] for lbl in _sorted_labels if " | " in lbl]
+        _cur_sel = st.session_state.viewer_selected_block
+        # Используем полный block_id в метке — иначе при совпадающем префиксе
+        # selectbox всегда находит первое вхождение и выбирает не тот блок
+        _sel_opts = ["— select block —"] + [
+            f"{_t_icon.get(_id_to_block[bid].get('block_type',''),'?')} {bid} {_s_icon.get(_id_to_block[bid].get('status',''),'⚪')}"
+            for bid in _sorted_ids if bid in _id_to_block
+        ]
+        _sel_idx = 0
+        if _cur_sel and _cur_sel in _sorted_ids:
+            _sel_idx = _sorted_ids.index(_cur_sel) + 1
+        _chosen = st.selectbox(
+            "Select block",
+            options=_sel_opts,
+            index=_sel_idx,
+            key=f"blksel_{doc_id}_p{st.session_state.viewer_page}",
+            label_visibility="collapsed",
+        )
+        if _chosen != "— select block —":
+            _chosen_idx = _sel_opts.index(_chosen) - 1
+            if 0 <= _chosen_idx < len(_sorted_ids):
+                _chosen_bid = _sorted_ids[_chosen_idx]
+                if _chosen_bid != _cur_sel:
+                    st.session_state.viewer_selected_block = _chosen_bid
+                    st.session_state.viewer_edit_mode      = False
+                    st.session_state.viewer_confirm_delete = False
+                    st.session_state.viewer_mode           = None
+                    st.rerun()
+        elif _cur_sel:
+            st.session_state.viewer_selected_block = None
+            st.rerun()
+
+        st.caption("💾 Order saved in session")
+        st.markdown("---")
+    else:
+        st.caption("No blocks on this page")
+        st.markdown("---")
+
     selected_id = st.session_state.viewer_selected_block
 
     if not selected_id:
-        if st.session_state.viewer_draw_mode:
-            draw_type = st.session_state.viewer_draw_type
-            rgb = BLOCK_COLORS[draw_type]
-            st.markdown(
-                f"<div style='padding:12px;background:rgba({rgb[0]},{rgb[1]},{rgb[2]},0.1);"
-                f"border:1px solid {TYPE_HEX[draw_type]};border-radius:8px'>"
-                f"<b>✏️ Draw mode ({draw_type})</b><br><br>"
-                f"1. Hold mouse button and <b>draw a rectangle</b><br>"
-                f"2. Click <b>«Add block»</b></div>",
-                unsafe_allow_html=True,
-            )
-        else:
+        if not st.session_state.viewer_draw_mode:
             st.caption("Click a block on the image or select from list")
         st.stop()
 
@@ -916,7 +982,6 @@ with col_right:
     btype   = block.get("block_type", "—")
     bstatus = block.get("status", "—")
     conf    = block.get("confidence", 0)
-    output  = block.get("output") or ""
     bbox    = block.get("bbox", [0, 0, 0, 0])
 
     type_icon   = {"text": "📝", "table": "📊", "table_simple": "📊", "table_complex": "📊", "formula": "➗", "figure": "🖼"}.get(btype, "?")
