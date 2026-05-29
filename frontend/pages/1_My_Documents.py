@@ -104,7 +104,7 @@ def fetch_available_models(token: str = "") -> dict:
 
 
 @st.cache_data(ttl=60)
-def fetch_page_image(doc_id: str, page_num: int, token: str = "", max_w: int = 740, max_h: int = 960):
+def fetch_page_image(doc_id: str, page_num: int, token: str = "", max_w: int = 740, max_h: int = 750):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         r = httpx.get(
@@ -205,6 +205,7 @@ _defaults = {
     "viewer_orig_h": 0,
     "undo_stack": [],
     "canvas_last_coord": None,
+    "canvas_zoom": 1.0,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -618,9 +619,9 @@ with col_main:
 
     st.caption(f"Page {st.session_state.viewer_page} / {total_pages}")
 
-    # ── Toolbar: mode toggle, type select, undo ───────────────────────────
+    # ── Toolbar: mode toggle, type select, zoom, undo ─────────────────────
     is_draw = st.session_state.viewer_draw_mode
-    tc1, tc2, tc3 = st.columns([1, 3, 1])
+    tc1, tc2, tc3, tc4, tc5, tc6 = st.columns([2, 3, 1, 1, 1, 1])
     with tc1:
         if st.button(
             "👆 Select" if is_draw else "✏️ Draw",
@@ -649,6 +650,19 @@ with col_main:
                 st.session_state.viewer_canvas_version += 1
 
     with tc3:
+        if st.button("➖", use_container_width=True, key="zoom_out", help="Zoom out"):
+            st.session_state.canvas_zoom = round(max(0.3, st.session_state.canvas_zoom - 0.15), 2)
+            st.session_state.viewer_canvas_version += 1
+            st.rerun()
+    with tc4:
+        st.caption(f"{st.session_state.canvas_zoom:.0%}")
+    with tc5:
+        if st.button("➕", use_container_width=True, key="zoom_in", help="Zoom in"):
+            st.session_state.canvas_zoom = round(min(3.0, st.session_state.canvas_zoom + 0.15), 2)
+            st.session_state.viewer_canvas_version += 1
+            st.rerun()
+
+    with tc6:
         _stk = st.session_state.undo_stack
         _undo_label = f"↩ ({len(_stk)})" if _stk else "↩"
         if st.button(
@@ -678,6 +692,14 @@ with col_main:
             st.session_state.viewer_selected_block,
             scale=scale,
         )
+
+        zoom = st.session_state.canvas_zoom
+        if zoom != 1.0:
+            annotated = annotated.resize(
+                (int(annotated.width * zoom), int(annotated.height * zoom)),
+                Image.LANCZOS,
+            )
+        effective_scale = scale * zoom
 
         img_w = annotated.width
 
@@ -711,10 +733,10 @@ with col_main:
                     _top    = _last.get("top", 0)
                     _width  = _last.get("width", 0) * _last.get("scaleX", 1)
                     _height = _last.get("height", 0) * _last.get("scaleY", 1)
-                    x1 = max(0, int(_left / scale))
-                    y1 = max(0, int(_top  / scale))
-                    x2 = min(orig_w, int((_left + _width)  / scale))
-                    y2 = min(orig_h, int((_top  + _height) / scale))
+                    x1 = max(0, int(_left / effective_scale))
+                    y1 = max(0, int(_top  / effective_scale))
+                    x2 = min(orig_w, int((_left + _width)  / effective_scale))
+                    y2 = min(orig_h, int((_top  + _height) / effective_scale))
                     if x2 > x1 + 10 and y2 > y1 + 10:
                         _drawn_rect = [x1, y1, x2, y2]
 
@@ -748,10 +770,10 @@ with col_main:
                     "version": "5.2.4",
                     "objects": [{
                         "type": "rect",
-                        "left":   float(_ex1 * scale),
-                        "top":    float(_ey1 * scale),
-                        "width":  float((_ex2 - _ex1) * scale),
-                        "height": float((_ey2 - _ey1) * scale),
+                        "left":   float(_ex1 * effective_scale),
+                        "top":    float(_ey1 * effective_scale),
+                        "width":  float((_ex2 - _ex1) * effective_scale),
+                        "height": float((_ey2 - _ey1) * effective_scale),
                         "fill":   "rgba(255, 165, 0, 0.15)",
                         "stroke": "#FF8C00",
                         "strokeWidth": 3,
@@ -789,10 +811,10 @@ with col_main:
                         _nt  = _o.get("top", 0)
                         _nw  = _o.get("width", 0) * _o.get("scaleX", 1)
                         _nh  = _o.get("height", 0) * _o.get("scaleY", 1)
-                        nx1  = max(0, int(_nl / scale))
-                        ny1  = max(0, int(_nt / scale))
-                        nx2  = min(orig_w, int((_nl + _nw) / scale))
-                        ny2  = min(orig_h, int((_nt + _nh) / scale))
+                        nx1  = max(0, int(_nl / effective_scale))
+                        ny1  = max(0, int(_nt / effective_scale))
+                        nx2  = min(orig_w, int((_nl + _nw) / effective_scale))
+                        ny2  = min(orig_h, int((_nt + _nh) / effective_scale))
                         if max(abs(nx1-_ex1), abs(ny1-_ey1), abs(nx2-_ex2), abs(ny2-_ey2)) > 3:
                             st.session_state["pending_bbox"]     = [nx1, ny1, nx2, ny2]
                             st.session_state["pending_bbox_for"] = st.session_state.viewer_selected_block
@@ -815,8 +837,8 @@ with col_main:
                     st.session_state["canvas_last_coord"] = _coord_key
 
             if coords is not None:
-                ox = int(coords["x"] / scale)
-                oy = int(coords["y"] / scale)
+                ox = int(coords["x"] / effective_scale)
+                oy = int(coords["y"] / effective_scale)
                 clicked = None
                 for b in all_blocks:
                     if b.get("page_num") != st.session_state.viewer_page:
