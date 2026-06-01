@@ -40,6 +40,14 @@ if not ensure_authenticated():
 
 from utils.styles import inject_global_styles
 inject_global_styles()
+st.markdown("""
+<style>
+/* Canvas column — hide horizontal overflow so zoomed image doesn't shift layout */
+.main .block-container { overflow-x: hidden; }
+/* Center the canvas iframe within its column */
+[data-testid="stIframe"] { display: block; margin: 0 auto; }
+</style>
+""", unsafe_allow_html=True)
 
 from components.auth_guard import require_auth, render_sidebar_user
 current_user = require_auth()
@@ -887,6 +895,9 @@ with col_right:
                         if len(_stk) > 10:
                             _stk.pop(0)
                         fetch_blocks.clear()
+                        # Сбросить сохранённый порядок — иначе sort_items не увидит новый блок
+                        _add_order_key = f"block_order_{doc_id}_p{st.session_state.viewer_page}"
+                        st.session_state.pop(_add_order_key, None)
                         st.session_state.viewer_canvas_version += 1
                         st.session_state.viewer_draw_mode      = False
                         st.session_state.viewer_selected_block = new_id
@@ -1029,22 +1040,23 @@ with col_right:
             "Type",
             _type_opts,
             index=_type_opts.index(btype) if btype in _type_opts else 0,
-            key=f"sel_type_{selected_id}_{btype}",
+            key=f"sel_type_{selected_id}",
         )
         if new_type != btype:
-            _stk = st.session_state.undo_stack
-            _stk.append({"action": "patch", "block_id": selected_id, "snapshot": dict(block)})
-            if len(_stk) > 10:
-                _stk.pop(0)
-            _r = api("PATCH", f"/processing/{doc_id}/blocks/{selected_id}",
-                     json={"block_type": new_type}, timeout=5)
-            if _r and _r.status_code == 200:
-                fetch_blocks.clear()
-                st.rerun()
-            else:
-                _stk.pop()
-                if _r:
-                    st.error(f"Error: {_r.text[:60]}")
+            if st.button("💾 Save type", use_container_width=True, key="btn_save_type"):
+                _stk = st.session_state.undo_stack
+                _stk.append({"action": "patch", "block_id": selected_id, "snapshot": dict(block)})
+                if len(_stk) > 10:
+                    _stk.pop(0)
+                _r = api("PATCH", f"/processing/{doc_id}/blocks/{selected_id}",
+                         json={"block_type": new_type}, timeout=5)
+                if _r and _r.status_code == 200:
+                    fetch_blocks.clear()
+                    st.rerun()
+                else:
+                    _stk.pop()
+                    if _r:
+                        st.error(f"Error: {_r.text[:60]}")
 
         st.divider()
 
@@ -1132,6 +1144,8 @@ with col_right:
                 st.session_state.viewer_selected_block  = None
                 st.session_state.viewer_confirm_delete  = False
                 fetch_blocks.clear()
+                _del_order_key = f"block_order_{doc_id}_p{st.session_state.viewer_page}"
+                st.session_state.pop(_del_order_key, None)
                 st.rerun()
         with dc2:
             if st.button("❌ No", use_container_width=True, key="btn_del_no"):
