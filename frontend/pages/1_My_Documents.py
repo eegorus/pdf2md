@@ -38,7 +38,7 @@ from utils.auth import ensure_authenticated
 if not ensure_authenticated():
     st.stop()
 
-from utils.styles import inject_global_styles
+from utils.styles import inject_global_styles, inject_editor_layout
 inject_global_styles()
 st.markdown("""
 <style>
@@ -541,41 +541,148 @@ if st.session_state.get("ocr_polling") and st.session_state.get("ocr_doc_id") ==
         st.warning(f"Failed to get OCR status: {_e}")
         st.session_state.pop("ocr_polling", None)
 
-col_left, col_main, col_right = st.columns([0.65, 3.0, 1.35])
+# ── Editor-style layout activation ───────────────────────────────────────────
+inject_editor_layout()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LEFT — documents, filters, stats
+# TOOLBAR — flat st.columns (no nesting) so buttons register on first click
 # ══════════════════════════════════════════════════════════════════════════════
-with col_left:
-    st.markdown("### 📁 Documents")
-    if st.button("↩ Change document", use_container_width=True, key="btn_change_doc"):
-        st.session_state.pop("viewer_doc_id", None)
+
+_is_draw = st.session_state.viewer_draw_mode
+_stk_tb  = st.session_state.undo_stack
+_zoom_tb = st.session_state.canvas_zoom
+
+(
+    _tn_first, _tn_prev, _tn_inp, _tn_next, _tn_last,
+    _t_draw, _t_type,
+    _t_pg_lbl,
+    _t_zm, _t_zoom_lbl, _t_zp,
+    _t_undo,
+    _t_back,
+) = st.columns([1, 1, 2, 1, 1, 2, 3, 2, 1, 2, 1, 2, 2])
+
+with _tn_first:
+    if st.button("⏮", use_container_width=True, key="nav_first"):
+        st.session_state.viewer_page            = 1
+        st.session_state.viewer_selected_block  = None
+        st.session_state.viewer_canvas_version += 1
         st.rerun()
-    docs = fetch_documents(st.session_state.get("access_token", ""))
-    for doc in docs:
-        did    = doc["doc_id"]
-        dname  = doc.get("filename", did)[:26]
-        is_cur = did == doc_id
-        if st.button(
-            f"{'▶ ' if is_cur else ''}{dname}",
-            key=f"doc_{did}",
-            use_container_width=True,
-            type="primary" if is_cur else "secondary",
-        ):
-            st.session_state.viewer_doc_id         = did
-            st.session_state.current_doc_name       = doc.get("filename", did)
-            st.session_state.viewer_page            = 1
+
+with _tn_prev:
+    if st.button("◀", use_container_width=True, key="nav_prev"):
+        if st.session_state.viewer_page > 1:
+            st.session_state.viewer_page           -= 1
             st.session_state.viewer_selected_block  = None
-            st.session_state.viewer_draw_mode       = False
-            st.session_state.viewer_mode            = None
             st.session_state.viewer_canvas_version += 1
-            for _fmt in ("markdown", "json", "csv"):
-                st.session_state.pop(f"exp_left_bytes_{_fmt}", None)
-                st.session_state.pop(f"exp_right_bytes_{_fmt}", None)
-            fetch_blocks.clear()
             st.rerun()
 
-    st.markdown("---")
+with _tn_inp:
+    _new_page = st.number_input(
+        "Page", min_value=1, max_value=total_pages,
+        value=st.session_state.viewer_page,
+        label_visibility="collapsed", key="tb_page_input",
+    )
+    if _new_page != st.session_state.viewer_page:
+        st.session_state.viewer_page            = _new_page
+        st.session_state.viewer_selected_block  = None
+        st.session_state.viewer_canvas_version += 1
+
+with _tn_next:
+    if st.button("▶", use_container_width=True, key="nav_next"):
+        if st.session_state.viewer_page < total_pages:
+            st.session_state.viewer_page           += 1
+            st.session_state.viewer_selected_block  = None
+            st.session_state.viewer_canvas_version += 1
+            st.rerun()
+
+with _tn_last:
+    if st.button("⏭", use_container_width=True, key="nav_last"):
+        st.session_state.viewer_page            = total_pages
+        st.session_state.viewer_selected_block  = None
+        st.session_state.viewer_canvas_version += 1
+        st.rerun()
+
+with _t_draw:
+    if st.button(
+        "👆 Select" if _is_draw else "✏️ Draw",
+        use_container_width=True,
+        type="secondary" if _is_draw else "primary",
+        key="toggle_mode",
+    ):
+        st.session_state.viewer_draw_mode = not _is_draw
+        st.session_state.viewer_canvas_version += 1
+
+with _t_type:
+    if st.session_state.viewer_draw_mode:
+        _type_opts = ["text", "table_simple", "table_complex", "formula", "figure"]
+        _icons = {"text": "📝", "table_simple": "📊", "table_complex": "📊", "formula": "➗", "figure": "🖼"}
+        _prev_type = st.session_state.viewer_draw_type
+        _new_type = st.selectbox(
+            "type", _type_opts,
+            index=_type_opts.index(_prev_type),
+            format_func=lambda t: f"{_icons.get(t, '?')} {t}",
+            label_visibility="collapsed",
+            key="draw_type_sel",
+        )
+        if _new_type != _prev_type:
+            st.session_state.viewer_draw_type    = _new_type
+            st.session_state.viewer_canvas_version += 1
+
+with _t_pg_lbl:
+    st.markdown(
+        f"<div style='padding-top:8px;text-align:center;font-size:13px;"
+        f"color:rgba(255,255,255,0.5)'>p.{st.session_state.viewer_page}/{total_pages}</div>",
+        unsafe_allow_html=True,
+    )
+
+with _t_zm:
+    if st.button("➖", use_container_width=True, key="zoom_out", help="Zoom out"):
+        st.session_state.canvas_zoom = round(max(0.3, _zoom_tb - 0.15), 2)
+        st.session_state.viewer_canvas_version += 1
+        st.rerun()
+
+with _t_zoom_lbl:
+    st.markdown(
+        f"<div style='padding-top:8px;text-align:center;font-size:13px'>"
+        f"{_zoom_tb:.0%}</div>",
+        unsafe_allow_html=True,
+    )
+
+with _t_zp:
+    if st.button("➕", use_container_width=True, key="zoom_in", help="Zoom in"):
+        st.session_state.canvas_zoom = round(min(3.0, _zoom_tb + 0.15), 2)
+        st.session_state.viewer_canvas_version += 1
+        st.rerun()
+
+with _t_undo:
+    _undo_label = f"↩ ({len(_stk_tb)})" if _stk_tb else "↩"
+    if st.button(
+        _undo_label,
+        use_container_width=True,
+        disabled=len(_stk_tb) == 0,
+        key="btn_undo_top",
+        help=f"Undo last action ({len(_stk_tb)} in stack)" if _stk_tb else "No actions to undo",
+    ):
+        if _do_undo():
+            st.rerun()
+
+with _t_back:
+    if st.button("⬅ Back", use_container_width=True, key="btn_change_doc"):
+        st.session_state.pop("viewer_doc_id", None)
+        st.rerun()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# THREE-COLUMN LAYOUT
+# ══════════════════════════════════════════════════════════════════════════════
+col_left, col_main, col_right = st.columns([1.0, 3.5, 1.5])
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LEFT — recognition info only
+# ══════════════════════════════════════════════════════════════════════════════
+with col_left:
+    _cur_doc_name = st.session_state.get("current_doc_name") or doc_id
+    st.markdown(f"**📄 {_cur_doc_name[:30]}**")
+    st.divider()
     total_blocks_count  = len(all_blocks)
     marked_blocks_count = sum(1 for b in all_blocks if b.get("block_type"))
     if total_blocks_count > 0:
@@ -586,102 +693,11 @@ with col_left:
                      key="btn_open_model_dialog"):
             model_selection_dialog(doc_id, all_blocks)
 
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN — navigation + image + block list
+# MAIN — canvas only (toolbar moved above)
 # ══════════════════════════════════════════════════════════════════════════════
 with col_main:
-    # ── Navigation ────────────────────────────────────────────────────────
-    n1, n2, n3, n4, n5 = st.columns([1, 1, 2, 1, 1])
-    with n1:
-        if st.button("⏮", use_container_width=True):
-            st.session_state.viewer_page            = 1
-            st.session_state.viewer_selected_block  = None
-            st.session_state.viewer_canvas_version += 1
-    with n2:
-        if st.button("◀", use_container_width=True) and st.session_state.viewer_page > 1:
-            st.session_state.viewer_page           -= 1
-            st.session_state.viewer_selected_block  = None
-            st.session_state.viewer_canvas_version += 1
-    with n3:
-        new_page = st.number_input(
-            "Page", min_value=1, max_value=total_pages,
-            value=st.session_state.viewer_page,
-            label_visibility="collapsed",
-        )
-        if new_page != st.session_state.viewer_page:
-            st.session_state.viewer_page            = new_page
-            st.session_state.viewer_selected_block  = None
-            st.session_state.viewer_canvas_version += 1
-    with n4:
-        if st.button("▶", use_container_width=True) and st.session_state.viewer_page < total_pages:
-            st.session_state.viewer_page           += 1
-            st.session_state.viewer_selected_block  = None
-            st.session_state.viewer_canvas_version += 1
-    with n5:
-        if st.button("⏭", use_container_width=True):
-            st.session_state.viewer_page            = total_pages
-            st.session_state.viewer_selected_block  = None
-            st.session_state.viewer_canvas_version += 1
-
-    st.caption(f"Page {st.session_state.viewer_page} / {total_pages}")
-
-    # ── Toolbar: mode toggle, type select, zoom, undo ─────────────────────
     is_draw = st.session_state.viewer_draw_mode
-    tc1, tc2, tc3, tc4, tc5, tc6 = st.columns([2, 3, 1, 1, 1, 1])
-    with tc1:
-        if st.button(
-            "👆 Select" if is_draw else "✏️ Draw",
-            use_container_width=True,
-            type="secondary" if is_draw else "primary",
-            key="toggle_mode",
-        ):
-            st.session_state.viewer_draw_mode = not is_draw
-            st.session_state.viewer_canvas_version += 1
-
-    if st.session_state.viewer_draw_mode:
-        with tc2:
-            type_opts = ["text", "table_simple", "table_complex", "formula", "figure"]
-            icons = {"text": "📝", "table": "📊", "table_simple": "📊", "table_complex": "📊", "formula": "➗", "figure": "🖼"}
-            prev_type = st.session_state.viewer_draw_type
-            new_type = st.selectbox(
-                "type",
-                type_opts,
-                index=type_opts.index(prev_type),
-                format_func=lambda t: f"{icons[t]} {t}",
-                label_visibility="collapsed",
-                key="draw_type_sel",
-            )
-            if new_type != prev_type:
-                st.session_state.viewer_draw_type    = new_type
-                st.session_state.viewer_canvas_version += 1
-
-    with tc3:
-        if st.button("➖", use_container_width=True, key="zoom_out", help="Zoom out"):
-            st.session_state.canvas_zoom = round(max(0.3, st.session_state.canvas_zoom - 0.15), 2)
-            st.session_state.viewer_canvas_version += 1
-            st.rerun()
-    with tc4:
-        st.caption(f"{st.session_state.canvas_zoom:.0%}")
-    with tc5:
-        if st.button("➕", use_container_width=True, key="zoom_in", help="Zoom in"):
-            st.session_state.canvas_zoom = round(min(3.0, st.session_state.canvas_zoom + 0.15), 2)
-            st.session_state.viewer_canvas_version += 1
-            st.rerun()
-
-    with tc6:
-        _stk = st.session_state.undo_stack
-        _undo_label = f"↩ ({len(_stk)})" if _stk else "↩"
-        if st.button(
-            _undo_label,
-            use_container_width=True,
-            disabled=len(_stk) == 0,
-            key="btn_undo_top",
-            help=f"Undo last action ({len(_stk)} in stack)" if _stk else "No actions to undo",
-        ):
-            if _do_undo():
-                st.rerun()
 
     # ── Image ─────────────────────────────────────────────────────────────
     page_img, orig_w, orig_h, scale = fetch_page_image(
@@ -1150,8 +1166,5 @@ with col_right:
         with dc2:
             if st.button("❌ No", use_container_width=True, key="btn_del_no"):
                 st.session_state.viewer_confirm_delete = False
-
-
-
 
 
