@@ -106,6 +106,12 @@ FERNET_KEY=<base64 32-byte key>
 
 ## Current Status (2026-05-19)
 
+**Last completed (2026-06-02):**
+- ✅ Починены кнопки навигации по страницам (⏮ ◀ ▶ ⏭) в `pages/1_My_Documents.py`
+  - **Причина бага:** `st.number_input` имел `key="tb_page_input"` и `value=st.session_state.viewer_page`. В Streamlit при наличии `key` виджет управляется через `session_state[key]`, а не через `value=`. После нажатия кнопки навигации (например, ▶ → `viewer_page = 2`, `st.rerun()`), `tb_page_input` оставался = 1, и проверка `if _new_page != viewer_page` переписывала `viewer_page` обратно в 1.
+  - **Фикс:** перед рендером `number_input` синхронизировать `st.session_state["tb_page_input"] = st.session_state.viewer_page`; убрать `value=` параметр (избыточен при key); добавить `st.rerun()` в ветку ручного ввода.
+  - **Паттерн для Streamlit:** если `number_input`/`slider` с `key` используется как зеркало другого session_state значения — всегда явно синхронизировать `session_state[key]` перед рендером виджета.
+
 **Last completed (2026-05-19):**
 - ✅ Quick parsers рефакторинг — Template Method Pattern в `backend/pipeline/quick_parsers/`
   - `base.py`: `BaseParser` — абстрактный `_call_api()` + шаблонный `run()` с общей логикой рендера страниц и извлечения фигур
