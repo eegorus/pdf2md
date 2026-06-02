@@ -577,15 +577,17 @@ with _tn_prev:
             st.rerun()
 
 with _tn_inp:
+    # Keep tb_page_input in sync so it doesn't overwrite viewer_page after nav buttons fire
+    st.session_state["tb_page_input"] = st.session_state.viewer_page
     _new_page = st.number_input(
         "Page", min_value=1, max_value=total_pages,
-        value=st.session_state.viewer_page,
         label_visibility="collapsed", key="tb_page_input",
     )
     if _new_page != st.session_state.viewer_page:
         st.session_state.viewer_page            = _new_page
         st.session_state.viewer_selected_block  = None
         st.session_state.viewer_canvas_version += 1
+        st.rerun()
 
 with _tn_next:
     if st.button("▶", use_container_width=True, key="nav_next"):
