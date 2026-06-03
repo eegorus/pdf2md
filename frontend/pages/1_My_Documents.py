@@ -1027,9 +1027,15 @@ with col_right:
             try:
                 api("POST", f"/processing/{doc_id}/blocks/reorder",
                     json={"order": _new_order}, timeout=5)
-                fetch_blocks.clear()
             except Exception:
                 pass
+            # Обновить sort_order прямо в all_blocks — канвас нарисуется правильно до следующего rerun
+            _order_map = {bid: i for i, bid in enumerate(_new_order)}
+            for _b in all_blocks:
+                if _b.get("block_id") in _order_map:
+                    _b["sort_order"] = _order_map[_b["block_id"]]
+            fetch_blocks.clear()
+            st.rerun()
 
         # Selectbox для выбора блока (sort_items не поддерживает клик)
         _id_to_block = {b["block_id"]: b for b in _page_blocks}
@@ -1105,7 +1111,7 @@ with col_right:
     # ── Ignore toggle ─────────────────────────────────────────────────────
     _is_ignored = block.get("ignore", False)
     _ignore_label = "✓ Ignored" if _is_ignored else "Ignore"
-    if st.button(_ignore_label, key="btn_ignore", use_container_width=True):
+    if st.button(_ignore_label, key=f"btn_ignore_{selected_id}", use_container_width=True):
         _r = api("PATCH", f"/processing/{doc_id}/blocks/{selected_id}",
                  json={"ignore": not _is_ignored}, timeout=5)
         if _r and _r.status_code == 200:
@@ -1124,7 +1130,7 @@ with col_right:
             key=f"sel_type_{selected_id}",
         )
         if new_type != btype:
-            if st.button("💾 Save type", use_container_width=True, key="btn_save_type"):
+            if st.button("💾 Save type", use_container_width=True, key=f"btn_save_type_{selected_id}"):
                 _stk = st.session_state.undo_stack
                 _stk.append({"action": "patch", "block_id": selected_id, "snapshot": dict(block)})
                 if len(_stk) > 10:
@@ -1210,13 +1216,13 @@ with col_right:
 
     # ── Delete block ──────────────────────────────────────────────────────
     if not st.session_state.viewer_confirm_delete:
-        if st.button("🗑 Delete block", use_container_width=True, key="btn_del"):
+        if st.button("🗑 Delete block", use_container_width=True, key=f"btn_del_{selected_id}"):
             st.session_state.viewer_confirm_delete = True
     else:
         st.warning("⚠️ Delete permanently?")
         dc1, dc2 = st.columns(2)
         with dc1:
-            if st.button("✅ Yes", use_container_width=True, type="primary", key="btn_del_yes"):
+            if st.button("✅ Yes", use_container_width=True, type="primary", key=f"btn_del_yes_{selected_id}"):
                 _stk = st.session_state.undo_stack
                 _stk.append({"action": "delete", "block_id": selected_id, "snapshot": dict(block)})
                 if len(_stk) > 10:
