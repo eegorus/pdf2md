@@ -262,7 +262,6 @@ _defaults = {
     "canvas_last_coord": None,
     "canvas_zoom": 1.0,
     "viewer_show_order": True,
-    "viewer_drag_reorder": False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -969,9 +968,6 @@ with col_right:
                         if len(_stk) > 10:
                             _stk.pop(0)
                         fetch_blocks.clear()
-                        # Сбросить сохранённый порядок — иначе sort_items не увидит новый блок
-                        _add_order_key = f"block_order_{doc_id}_p{st.session_state.viewer_page}"
-                        st.session_state.pop(_add_order_key, None)
                         st.session_state.viewer_canvas_version += 1
                         st.session_state.viewer_draw_mode      = False
                         st.session_state.viewer_selected_block = new_id
@@ -994,36 +990,30 @@ with col_right:
             )
         st.markdown("---")
 
-    # ── Block list (правка 2 — sortable, в правой панели) ─────────────────
+    # ── Block list — sortable, в правой панели ────────────────────────────
     _page_blocks = [
         b for b in all_blocks
         if b.get("page_num") == st.session_state.viewer_page
     ]
     _order_key = f"block_order_{doc_id}_p{st.session_state.viewer_page}"
-    _saved_order = st.session_state.get(_order_key)
 
     _t_icon = {"text": "📝", "table": "📊", "table_simple": "📊",
                "table_complex": "📊", "formula": "➗", "figure": "🖼"}
     _s_icon = {"needs_review": "🔴", "accepted": "✅", "ocr_done": "🔵", "error": "❌"}
 
     if _page_blocks:
-        # label = "<icon> <TYPE> | <full_block_id>" — полный ID, без укорачивания
-        _labels = [
-            f"{_t_icon.get(b.get('block_type',''),'?')} {b.get('block_type','?').upper()} | {b['block_id']}"
-            for b in _page_blocks
-        ]
+        # Базовый порядок — по sort_order из backend
+        _page_blocks_sorted = sorted(
+            _page_blocks,
+            key=lambda b: b.get("sort_order", b.get("blockidx", 0)),
+        )
 
-        if _saved_order:
-            _saved_ids = {lbl.split(" | ")[1] for lbl in _saved_order if " | " in lbl}
-            _reordered = [b for b in _page_blocks if b["block_id"] in _saved_ids]
-            _remaining = [b for b in _page_blocks if b not in _reordered]
-            _page_blocks_sorted = _reordered + _remaining
-            _labels = [
-                f"{_t_icon.get(b.get('block_type',''),'?')} {b.get('block_type','?').upper()} | {b['block_id']}"
-                for b in _page_blocks_sorted
-            ]
-        else:
-            _page_blocks_sorted = _page_blocks
+        # Метки для sort_items: ignored помечаем 🚫 (blockid после последнего " | ")
+        _labels = [
+            f"{'🚫' if b.get('ignore') else _t_icon.get(b.get('block_type',''),'?')} "
+            f"{b.get('block_type','?').upper()} | {b['block_id']}"
+            for b in _page_blocks_sorted
+        ]
 
         st.caption(f"Blocks on page: {len(_page_blocks)}")
         _sorted_labels = sort_items(
@@ -1033,7 +1023,7 @@ with col_right:
         )
         if _sorted_labels != _labels:
             st.session_state[_order_key] = _sorted_labels
-            _new_order = [lbl.split(" | ")[1] for lbl in _sorted_labels if " | " in lbl]
+            _new_order = [lbl.split(" | ")[-1].strip() for lbl in _sorted_labels if " | " in lbl]
             try:
                 api("POST", f"/processing/{doc_id}/blocks/reorder",
                     json={"order": _new_order}, timeout=5)
@@ -1043,12 +1033,11 @@ with col_right:
 
         # Selectbox для выбора блока (sort_items не поддерживает клик)
         _id_to_block = {b["block_id"]: b for b in _page_blocks}
-        _sorted_ids = [lbl.split(" | ")[1] for lbl in _sorted_labels if " | " in lbl]
+        _sorted_ids = [lbl.split(" | ")[-1].strip() for lbl in _sorted_labels if " | " in lbl]
         _cur_sel = st.session_state.viewer_selected_block
-        # Используем полный block_id в метке — иначе при совпадающем префиксе
-        # selectbox всегда находит первое вхождение и выбирает не тот блок
         _sel_opts = ["— select block —"] + [
-            f"{_t_icon.get(_id_to_block[bid].get('block_type',''),'?')} {bid} {_s_icon.get(_id_to_block[bid].get('status',''),'⚪')}"
+            f"{'🚫' if _id_to_block[bid].get('ignore') else _t_icon.get(_id_to_block[bid].get('block_type',''),'?')} "
+            f"{bid} {_s_icon.get(_id_to_block[bid].get('status',''),'⚪')}"
             for bid in _sorted_ids if bid in _id_to_block
         ]
         _sel_idx = 0
@@ -1074,46 +1063,6 @@ with col_right:
         elif _cur_sel:
             st.session_state.viewer_selected_block = None
             st.rerun()
-
-        st.caption("💾 Order saved in session")
-
-        # ── Reorder mode: ↑/↓ buttons ────────────────────────────────────
-        st.checkbox("Reorder blocks", key="viewer_drag_reorder")
-        if st.session_state.get("viewer_drag_reorder"):
-            _page_blocks_ordered = sorted(
-                [b for b in _page_blocks if not b.get("ignore", False)],
-                key=lambda b: b.get("sort_order", b.get("blockidx", 0)),
-            )
-            for _ri, _rb in enumerate(_page_blocks_ordered):
-                _rbid = _rb["block_id"]
-                _rbtype = _rb.get("block_type", "?")
-                _col_up, _col_dn, _col_info = st.columns([1, 1, 4])
-                with _col_info:
-                    st.caption(f"#{_rb.get('sort_order', _ri)} {_rbtype} — {_rbid[-6:]}")
-                with _col_up:
-                    if _ri > 0 and st.button("↑", key=f"up_{_rbid}"):
-                        _new_order = [x["block_id"] for x in _page_blocks_ordered]
-                        _new_order[_ri], _new_order[_ri - 1] = _new_order[_ri - 1], _new_order[_ri]
-                        _r = api("POST", f"/processing/{doc_id}/blocks/reorder",
-                                 json={"order": _new_order}, timeout=5)
-                        if _r and _r.status_code == 200:
-                            fetch_blocks.clear()
-                            st.session_state.pop(_order_key, None)
-                            st.rerun()
-                        elif _r:
-                            st.error(f"Error: {_r.text[:60]}")
-                with _col_dn:
-                    if _ri < len(_page_blocks_ordered) - 1 and st.button("↓", key=f"dn_{_rbid}"):
-                        _new_order = [x["block_id"] for x in _page_blocks_ordered]
-                        _new_order[_ri], _new_order[_ri + 1] = _new_order[_ri + 1], _new_order[_ri]
-                        _r = api("POST", f"/processing/{doc_id}/blocks/reorder",
-                                 json={"order": _new_order}, timeout=5)
-                        if _r and _r.status_code == 200:
-                            fetch_blocks.clear()
-                            st.session_state.pop(_order_key, None)
-                            st.rerun()
-                        elif _r:
-                            st.error(f"Error: {_r.text[:60]}")
 
         st.markdown("---")
     else:
@@ -1276,8 +1225,6 @@ with col_right:
                 st.session_state.viewer_selected_block  = None
                 st.session_state.viewer_confirm_delete  = False
                 fetch_blocks.clear()
-                _del_order_key = f"block_order_{doc_id}_p{st.session_state.viewer_page}"
-                st.session_state.pop(_del_order_key, None)
                 st.rerun()
         with dc2:
             if st.button("❌ No", use_container_width=True, key="btn_del_no"):
