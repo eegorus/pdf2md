@@ -89,6 +89,8 @@ def _run_layout_detection(doc_id: str):
                     "image_path": block_img_path,
                     "status":     "detected",
                     "output":     None,
+                    "sort_order": block.block_idx,
+                    "ignore":     False,
                 })
 
         # Сохраняем результаты
@@ -597,7 +599,7 @@ async def patch_block(
         if block.get("block_id") == block_id:
             if "output" in payload and not block.get("original_output"):
                 block["original_output"] = block.get("output") or ""
-            for field in ("status", "output", "block_type", "bbox"):
+            for field in ("status", "output", "block_type", "bbox", "ignore", "sort_order"):
                 if field in payload:
                     block[field] = payload[field]
             updated = True
@@ -658,6 +660,29 @@ async def delete_block(
     return {"block_id": block_id, "deleted": True}
 
 
+@router.post("/{doc_id}/blocks/reorder", summary="Переупорядочить блоки")
+async def reorder_blocks(
+    doc_id: str,
+    payload: dict = Body(...),
+    _doc: Document = Depends(verify_document_ownership),
+):
+    """
+    Принимает {"order": ["blockid1", "blockid2", ...]}
+    Обновляет sort_order для переданных блоков.
+    """
+    new_order = payload.get("order", [])
+    blocks_file = DATA_DIR / "results" / doc_id / "blocks.json"
+    if not blocks_file.exists():
+        raise HTTPException(status_code=404, detail="blocks.json not found")
+    blocks = json.loads(blocks_file.read_text())
+    order_map = {bid: i for i, bid in enumerate(new_order)}
+    for b in blocks:
+        if b["block_id"] in order_map:
+            b["sort_order"] = order_map[b["block_id"]]
+    blocks_file.write_text(json.dumps(blocks, ensure_ascii=False, indent=2))
+    return {"updated": len(order_map)}
+
+
 @router.post("/{doc_id}/blocks", summary="Добавить блок вручную")
 async def add_block(
     doc_id: str,
@@ -683,6 +708,8 @@ async def add_block(
         "image_path": None,
         "status":     "detected",
         "output":     None,
+        "sort_order": len([b for b in blocks if b.get("page_num") == page_num]),
+        "ignore":     False,
     }
     # ── Вырезаем кроп из страницы сразу при создании блока ──────────────────
     try:

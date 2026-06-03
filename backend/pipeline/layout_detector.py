@@ -68,6 +68,8 @@ class BlockDetection:
     raw_class: str           # оригинальный класс из YOLO
     page_num: int
     block_idx: int           # порядковый номер на странице
+    sort_order: int = 0      # reading order index, user-editable
+    ignore: bool = False     # excluded from export/markdown
 
 
 class LayoutDetector:
@@ -186,6 +188,7 @@ class LayoutDetector:
         blocks = self._split_merged_tables(blocks, image)
         for i, b in enumerate(blocks):
             b.block_idx = i
+            b.sort_order = i
         return blocks
 
     def _merge_table_fragments(self, blocks):

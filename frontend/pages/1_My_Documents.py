@@ -167,21 +167,66 @@ def draw_blocks_on_image(
     page_num: int,
     selected_id: str | None,
     scale: float = 1.0,
+    show_order: bool = True,
 ) -> Image.Image:
+    import math
+
     img = image.copy()
     draw = ImageDraw.Draw(img, "RGBA")
 
-    for block in blocks:
-        if block.get("page_num") != page_num:
-            continue
-        btype = block.get("block_type", "text")
-        bbox = block.get("bbox", [])
+    page_blocks = [b for b in blocks if b.get("page_num") == page_num]
+
+    ordered = sorted(
+        [b for b in page_blocks if not b.get("ignore", False)],
+        key=lambda b: b.get("sort_order", b.get("blockidx", 0)),
+    )
+    ignored_blocks = [b for b in page_blocks if b.get("ignore", False)]
+
+    # Reading order arrows (drawn under block rectangles)
+    if show_order and len(ordered) > 1:
+        for i in range(len(ordered) - 1):
+            b1, b2 = ordered[i], ordered[i + 1]
+            bbox1 = b1.get("bbox", [0, 0, 0, 0])
+            bbox2 = b2.get("bbox", [0, 0, 0, 0])
+            cx1 = int((bbox1[0] + bbox1[2]) / 2 * scale)
+            cy1 = int((bbox1[1] + bbox1[3]) / 2 * scale)
+            cx2 = int((bbox2[0] + bbox2[2]) / 2 * scale)
+            cy2 = int((bbox2[1] + bbox2[3]) / 2 * scale)
+            draw.line([(cx1, cy1), (cx2, cy2)], fill=(30, 120, 255, 100), width=2)
+            angle = math.atan2(cy2 - cy1, cx2 - cx1)
+            alen, aang = 14, 0.4
+            ax1 = cx2 - alen * math.cos(angle - aang)
+            ay1 = cy2 - alen * math.sin(angle - aang)
+            ax2 = cx2 - alen * math.cos(angle + aang)
+            ay2 = cy2 - alen * math.sin(angle + aang)
+            draw.polygon(
+                [(cx2, cy2), (int(ax1), int(ay1)), (int(ax2), int(ay2))],
+                fill=(30, 120, 255, 160),
+            )
+
+    # Ignored blocks — grey semi-transparent
+    for b in ignored_blocks:
+        bbox = b.get("bbox", [])
         if len(bbox) != 4:
             continue
         x1, y1, x2, y2 = (int(v * scale) for v in bbox)
+        bid = b.get("block_id")
+        outline = (255, 220, 0, 255) if bid == selected_id else (128, 128, 128, 120)
+        lw = 4 if bid == selected_id else 1
+        draw.rectangle([x1, y1, x2, y2], fill=(128, 128, 128, 30), outline=outline, width=lw)
+        draw.rectangle([x1, y1, x1 + 24, y1 + 16], fill=(128, 128, 128, 180))
+        draw.text((x1 + 2, y1 + 1), "IGN", fill=(255, 255, 255))
+
+    # Active blocks — coloured with sort_order badge
+    for idx, b in enumerate(ordered):
+        bbox = b.get("bbox", [])
+        if len(bbox) != 4:
+            continue
+        btype = b.get("block_type", "text")
+        x1, y1, x2, y2 = (int(v * scale) for v in bbox)
         rgb = BLOCK_COLORS.get(btype, (128, 128, 128))
-        bid = block.get("block_id")
-        status = block.get("status", "")
+        bid = b.get("block_id")
+        status = b.get("status", "")
         if bid == selected_id:
             outline, lw = (255, 220, 0, 255), 4
         elif status == "needs_review":
@@ -191,8 +236,10 @@ def draw_blocks_on_image(
         else:
             outline, lw = (*rgb, 200), 2
         draw.rectangle([x1, y1, x2, y2], fill=(*rgb, 30), outline=outline, width=lw)
-        draw.rectangle([x1, y1, x1 + 18, y1 + 16], fill=(*rgb, 220))
-        draw.text((x1 + 2, y1 + 1), btype[0].upper(), fill=(255, 255, 255))
+        label = str(b.get("sort_order", idx))
+        badge_w = max(18, len(label) * 7 + 4)
+        draw.rectangle([x1, y1, x1 + badge_w, y1 + 16], fill=(*rgb, 220))
+        draw.text((x1 + 2, y1 + 1), label, fill=(255, 255, 255))
 
     return img
 
@@ -214,6 +261,8 @@ _defaults = {
     "undo_stack": [],
     "canvas_last_coord": None,
     "canvas_zoom": 1.0,
+    "viewer_show_order": True,
+    "viewer_drag_reorder": False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -717,6 +766,7 @@ with col_main:
             st.session_state.viewer_page,
             st.session_state.viewer_selected_block,
             scale=scale,
+            show_order=st.session_state.get("viewer_show_order", True),
         )
 
         zoom = st.session_state.canvas_zoom
@@ -889,6 +939,12 @@ with col_main:
 with col_right:
     st.markdown("### 🔧 Tools")
 
+    st.checkbox(
+        "Show reading order",
+        value=st.session_state.get("viewer_show_order", True),
+        key="viewer_show_order",
+    )
+
     # ── Draw mode: Add block / Redraw (правка 1 — кнопки выше канваса) ────
     if st.session_state.viewer_draw_mode:
         _drawn_rect = st.session_state.get("_drawn_rect")
@@ -977,6 +1033,13 @@ with col_right:
         )
         if _sorted_labels != _labels:
             st.session_state[_order_key] = _sorted_labels
+            _new_order = [lbl.split(" | ")[1] for lbl in _sorted_labels if " | " in lbl]
+            try:
+                api("POST", f"/processing/{doc_id}/blocks/reorder",
+                    json={"order": _new_order}, timeout=5)
+                fetch_blocks.clear()
+            except Exception:
+                pass
 
         # Selectbox для выбора блока (sort_items не поддерживает клик)
         _id_to_block = {b["block_id"]: b for b in _page_blocks}
@@ -1013,6 +1076,45 @@ with col_right:
             st.rerun()
 
         st.caption("💾 Order saved in session")
+
+        # ── Reorder mode: ↑/↓ buttons ────────────────────────────────────
+        st.checkbox("Reorder blocks", key="viewer_drag_reorder")
+        if st.session_state.get("viewer_drag_reorder"):
+            _page_blocks_ordered = sorted(
+                [b for b in _page_blocks if not b.get("ignore", False)],
+                key=lambda b: b.get("sort_order", b.get("blockidx", 0)),
+            )
+            for _ri, _rb in enumerate(_page_blocks_ordered):
+                _rbid = _rb["block_id"]
+                _rbtype = _rb.get("block_type", "?")
+                _col_up, _col_dn, _col_info = st.columns([1, 1, 4])
+                with _col_info:
+                    st.caption(f"#{_rb.get('sort_order', _ri)} {_rbtype} — {_rbid[-6:]}")
+                with _col_up:
+                    if _ri > 0 and st.button("↑", key=f"up_{_rbid}"):
+                        _new_order = [x["block_id"] for x in _page_blocks_ordered]
+                        _new_order[_ri], _new_order[_ri - 1] = _new_order[_ri - 1], _new_order[_ri]
+                        _r = api("POST", f"/processing/{doc_id}/blocks/reorder",
+                                 json={"order": _new_order}, timeout=5)
+                        if _r and _r.status_code == 200:
+                            fetch_blocks.clear()
+                            st.session_state.pop(_order_key, None)
+                            st.rerun()
+                        elif _r:
+                            st.error(f"Error: {_r.text[:60]}")
+                with _col_dn:
+                    if _ri < len(_page_blocks_ordered) - 1 and st.button("↓", key=f"dn_{_rbid}"):
+                        _new_order = [x["block_id"] for x in _page_blocks_ordered]
+                        _new_order[_ri], _new_order[_ri + 1] = _new_order[_ri + 1], _new_order[_ri]
+                        _r = api("POST", f"/processing/{doc_id}/blocks/reorder",
+                                 json={"order": _new_order}, timeout=5)
+                        if _r and _r.status_code == 200:
+                            fetch_blocks.clear()
+                            st.session_state.pop(_order_key, None)
+                            st.rerun()
+                        elif _r:
+                            st.error(f"Error: {_r.text[:60]}")
+
         st.markdown("---")
     else:
         st.caption("No blocks on this page")
@@ -1050,6 +1152,18 @@ with col_right:
         st.image(_preview_bytes, use_container_width=True)
     else:
         st.caption("No preview")
+
+    # ── Ignore toggle ─────────────────────────────────────────────────────
+    _is_ignored = block.get("ignore", False)
+    _ignore_label = "✓ Ignored" if _is_ignored else "Ignore"
+    if st.button(_ignore_label, key="btn_ignore", use_container_width=True):
+        _r = api("PATCH", f"/processing/{doc_id}/blocks/{selected_id}",
+                 json={"ignore": not _is_ignored}, timeout=5)
+        if _r and _r.status_code == 200:
+            fetch_blocks.clear()
+            st.rerun()
+        elif _r:
+            st.error(f"Error: {_r.text[:60]}")
 
     # ── Geometry & type ───────────────────────────────────────────────────
     with st.expander("✏️ Geometry & type", expanded=False):
