@@ -1049,11 +1049,15 @@ with col_right:
         _sel_idx = 0
         if _cur_sel and _cur_sel in _sorted_ids:
             _sel_idx = _sorted_ids.index(_cur_sel) + 1
+        # Синхронизировать session_state[key] перед рендером — иначе при канвас-клике
+        # selectbox вернёт старое значение и сбросит viewer_selected_block
+        _blksel_key = f"blksel_{doc_id}_p{st.session_state.viewer_page}"
+        st.session_state[_blksel_key] = _sel_opts[_sel_idx]
         _chosen = st.selectbox(
             "Select block",
             options=_sel_opts,
             index=_sel_idx,
-            key=f"blksel_{doc_id}_p{st.session_state.viewer_page}",
+            key=_blksel_key,
             label_visibility="collapsed",
         )
         if _chosen != "— select block —":
