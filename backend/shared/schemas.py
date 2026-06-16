@@ -14,10 +14,14 @@ from pydantic import BaseModel, Field
 # ── Перечисления ──────────────────────────────────────────────────────
 
 class BlockType(str, Enum):
-    text    = "text"
-    table   = "table"
-    formula = "formula"
-    figure  = "figure"
+    text           = "text"
+    title          = "title"
+    figurecaption  = "figurecaption"
+    table          = "table"
+    table_simple   = "table_simple"
+    table_complex  = "table_complex"
+    formula        = "formula"
+    figure         = "figure"
 
 
 class DocStatus(str, Enum):

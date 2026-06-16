@@ -321,7 +321,7 @@ class OCRPipeline:
             if model_id in ("gpt4o", "claude", "openrouter"):
                 return self._process_cloud(image, block_type, model_id)
 
-            if block_type == "text":
+            if block_type in ("text", "title", "figurecaption"):
                 if self.text_ocr:
                     return self.text_ocr.recognize(image)
                 return self.fallback.process(image, "text")
@@ -427,6 +427,8 @@ class OCRPipeline:
 
         typeprompts = {
             "text": "Extract all text from this image exactly as written. Preserve paragraph breaks. Return plain text only.",
+            "title": "Extract the title or heading text from this image exactly as written. Return plain text only.",
+            "figurecaption": "Extract the figure caption text from this image exactly as written. Return plain text only.",
             "table": """Reproduce this table in GitHub-Flavored Markdown (GFM) pipe table format.
 Rules:
 - Include ALL rows and columns — never skip any data.

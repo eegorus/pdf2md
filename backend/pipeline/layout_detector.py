@@ -39,11 +39,11 @@ logger = logging.getLogger("prms.layout_detector")
 # Ключ: имя класса из модели (lowercase)
 # Значение: наш тип для pipeline
 YOLO_CLASS_MAP = {
-    "title":            "text",
+    "title":            "title",
     "plain text":       "text",
     "abandon":          None,          # Пропускаем колонтитулы
     "figure":           "figure",
-    "figure_caption":   "text",        # Подпись к рисунку = текст
+    "figure_caption":   "figurecaption",
     "table":            "table",
     "table_caption":    "text",        # Подпись к таблице = текст
     "table_footnote":   "text",

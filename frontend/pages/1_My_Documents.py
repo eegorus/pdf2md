@@ -54,15 +54,18 @@ current_user = require_auth()
 render_sidebar_user()
 
 BLOCK_COLORS = {
-    "text":    (59,  130, 246),
-    "table":   (234, 88,  12),
-    "table_simple":  (234, 179, 8),
-    "table_complex": (234, 88,  12),
-    "formula": (22,  163, 74),
-    "figure":  (147, 51,  234),
+    "text":          (59,  130, 246),
+    "title":         (255, 165,   0),
+    "figurecaption": (128,   0, 128),
+    "table":         (234,  88,  12),
+    "table_simple":  (234, 179,   8),
+    "table_complex": (234,  88,  12),
+    "formula":       (22,  163,  74),
+    "figure":        (147,  51, 234),
 }
 TYPE_HEX = {
-    "text": "#3b82f6", "table": "#ea580c", "table_simple": "#eab308", "table_complex": "#ea580c",
+    "text": "#3b82f6", "title": "#ffa500", "figurecaption": "#800080",
+    "table": "#ea580c", "table_simple": "#eab308", "table_complex": "#ea580c",
     "formula": "#16a34a", "figure": "#9333ea",
 }
 
@@ -664,7 +667,7 @@ with _t_draw:
 
 with _t_type:
     if st.session_state.viewer_draw_mode:
-        _type_opts = ["text", "table_simple", "table_complex", "formula", "figure"]
+        _type_opts = ["text", "title", "figurecaption", "table_simple", "table_complex", "formula", "figure"]
         _icons = {"text": "📝", "table_simple": "📊", "table_complex": "📊", "formula": "➗", "figure": "🖼"}
         _prev_type = st.session_state.viewer_draw_type
         _new_type = st.selectbox(
@@ -997,7 +1000,8 @@ with col_right:
     ]
     _order_key = f"block_order_{doc_id}_p{st.session_state.viewer_page}"
 
-    _t_icon = {"text": "📝", "table": "📊", "table_simple": "📊",
+    _t_icon = {"text": "📝", "title": "🔤", "figurecaption": "🏷",
+               "table": "📊", "table_simple": "📊",
                "table_complex": "📊", "formula": "➗", "figure": "🖼"}
     _s_icon = {"needs_review": "🔴", "accepted": "✅", "ocr_done": "🔵", "error": "❌"}
 
@@ -1126,7 +1130,7 @@ with col_right:
 
     # ── Geometry & type ───────────────────────────────────────────────────
     with st.expander("✏️ Geometry & type", expanded=False):
-        _type_opts = ["text", "table", "table_simple", "table_complex", "formula", "figure"]
+        _type_opts = ["text", "title", "figurecaption", "table", "table_simple", "table_complex", "formula", "figure"]
         new_type = st.selectbox(
             "Type",
             _type_opts,

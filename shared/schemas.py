@@ -5,12 +5,14 @@ from enum import Enum
 
 
 class BlockType(str, Enum):
-    TEXT = "text"
-    TABLE         = "table"
-    TABLE_SIMPLE  = "table_simple"
-    TABLE_COMPLEX = "table_complex"
-    FIGURE = "figure"
-    FORMULA = "formula"
+    TEXT           = "text"
+    TITLE          = "title"
+    FIGURECAPTION  = "figurecaption"
+    TABLE          = "table"
+    TABLE_SIMPLE   = "table_simple"
+    TABLE_COMPLEX  = "table_complex"
+    FIGURE         = "figure"
+    FORMULA        = "formula"
 
 
 class ProcessingStatus(str, Enum):
