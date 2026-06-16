@@ -39,6 +39,10 @@ venv/
 # === DOCKER ===
 .docker/
 
+# === NGINX ===
+nginx/certs/          # ← SSL ключи никогда не в git
+nginx/logs/
+
 # === IDE ===
 .vscode/
 .idea/
@@ -56,4 +60,3 @@ logs/
 # === JUPYTER ===
 .ipynb_checkpoints/
 *.ipynb
-data/
