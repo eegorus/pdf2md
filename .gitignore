@@ -60,3 +60,4 @@ logs/
 # === JUPYTER ===
 .ipynb_checkpoints/
 *.ipynb
+prms_pg_dump.sql

@@ -11,8 +11,8 @@ services:
     image: ollama/ollama:latest
     container_name: prms-ollama
     runtime: nvidia
-    ports:
-      - "11434:11434"          # Открываем только локально (не наружу!)
+#    ports:
+ #     - "11434:11434"          # Открываем только локально (не наружу!)
     volumes:
       - /home/guiuser/.ollama:/root/.ollama   # Named volume — модели сохраняются между пересозданиями
     environment:
